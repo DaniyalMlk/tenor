@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from .calendar import WEEKENDS_ONLY, Calendar, Rolling, calendar_from
+from .curve import (
+    BadCurve,
+    DiscountCurve,
+    Interpolation,
+    OffCurve,
+    Pillar,
+    flat_curve,
+)
 from .daycount import (
     BadPeriod,
     Basis,
@@ -12,6 +20,15 @@ from .daycount import (
     is_end_of_february,
     is_leap,
     year_fraction,
+)
+from .rates import (
+    BadRate,
+    Compounding,
+    Rate,
+    convert,
+    discount_factor,
+    forward_rate,
+    rate_from_discount,
 )
 from .schedule import (
     BadSchedule,
@@ -28,24 +45,37 @@ __version__ = "0.1.0"
 
 __all__ = [
     "WEEKENDS_ONLY",
+    "BadCurve",
     "BadPeriod",
+    "BadRate",
     "BadSchedule",
     "Basis",
     "Calendar",
+    "Compounding",
+    "DiscountCurve",
     "Frequency",
+    "Interpolation",
+    "OffCurve",
     "Period",
+    "Pillar",
+    "Rate",
     "Rolling",
     "Schedule",
     "Stub",
     "__version__",
     "add_months",
     "calendar_from",
+    "convert",
     "day_count",
     "days_in_year",
     "denominator",
+    "discount_factor",
     "end_of_month",
+    "flat_curve",
+    "forward_rate",
     "generate",
     "is_end_of_february",
     "is_leap",
+    "rate_from_discount",
     "year_fraction",
 ]
