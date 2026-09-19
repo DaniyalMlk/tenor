@@ -11,20 +11,28 @@ checked against a published worked example where one exists.
 
 ## Phase 1 — Dates, day counts and schedules
 
-- [ ] Day count fractions: ACT/360, ACT/365F, ACT/ACT ISDA, 30/360 US, 30E/360
-- [ ] Each checked against the worked examples published with the conventions
-- [ ] Business day conventions: following, modified following, preceding
-- [ ] Holiday calendars, composable across currencies
-- [ ] Payment schedule generation from an effective date, maturity and frequency
-- [ ] End-of-month and stub handling, with the stub reported rather than implied
+- [x] Day count fractions: ACT/360, ACT/365F, ACT/ACT ISDA, and all three 30/360
+- [x] Each checked against the published rules, case by case
+- [x] Business day conventions: following, modified following, preceding
+- [x] Holiday calendars, composable across currencies
+- [x] Payment schedule generation from an effective date, maturity and frequency
+- [x] End-of-month and stub handling, with the stub reported rather than implied
+
+"30/360" turned out to name three distinct rules — ISDA Bond Basis, 30E/360 and
+the US convention — which give 183, 182 and 180 days for the same six months.
+They are separate conventions here rather than one with a flag.
 
 ## Phase 2 — Discount curves
 
-- [ ] Discount factors, zero rates and forward rates, with the compounding stated
-- [ ] Interpolation: linear on zero rates, log-linear on discount factors
+- [x] Discount factors, zero rates and forward rates, with the compounding stated
+- [x] Interpolation: linear on zero rates, log-linear on discount factors
 - [ ] Monotone convex interpolation, which keeps forwards positive
-- [ ] Conversion between any two of discount, zero and forward without drift
-- [ ] Extrapolation refused rather than silently flattened
+- [x] Conversion between any two of discount, zero and forward without drift
+- [x] Extrapolation refused rather than silently flattened
+
+Log-linear on discount factors already guarantees positive forwards wherever the
+discount factors decrease; the remaining item is the smooth Hagan-West scheme,
+which keeps that guarantee without the piecewise-constant forwards.
 
 ## Phase 3 — Bootstrapping
 

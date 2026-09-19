@@ -10,7 +10,9 @@ treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
 `ROADMAP.md` says what is built and what is not. Phase 1 — dates, day counts,
-holiday calendars and payment schedules — is done.
+holiday calendars and payment schedules — is done, and phase 2 — discount
+curves, compounding conventions and interpolation — is done but for the
+monotone convex scheme.
 
 ## Using it
 
@@ -38,6 +40,23 @@ schedule.has_stub          # True — the first period is odd
 schedule.stubs[0].stub     # Stub.SHORT_FIRST
 schedule[0].start          # unadjusted, for accrual
 schedule[0].adjusted_end   # rolled, for payment
+```
+
+```python
+from tenor import Basis, Compounding, DiscountCurve, Interpolation
+
+curve = DiscountCurve.from_zeros(
+    date(2021, 1, 4),
+    [(date(2022, 1, 4), 0.010), (date(2026, 1, 4), 0.018)],
+    basis=Basis.ACT_365F,
+    interpolation=Interpolation.LOG_LINEAR_DISCOUNT,
+)
+
+curve.discount(date(2024, 6, 1))
+curve.zero_rate(date(2024, 6, 1), Compounding.SEMI_ANNUAL)
+curve.forward_rate(date(2023, 1, 4), date(2024, 1, 4))
+curve.instantaneous_forward(2.5)   # what the interpolation is really doing
+curve.reprices_pillars()           # True, and asserted rather than assumed
 ```
 
 ## Design
@@ -136,6 +155,52 @@ under the thirty-day conventions runs on unadjusted dates while payment runs on
 adjusted ones. A schedule that discards the unadjusted dates cannot compute its
 own accruals afterwards.
 
+### A rate without its compounding convention is not a rate
+
+The same discount factor of 0.90 over five years is 2.2222% simple, 2.1296%
+annual, 2.1184% semi-annual and 2.1072% continuous. Eleven and a half basis
+points across the conventions, which is wider than the bid-offer on most of the
+curve, and nothing in a bare float says which one it is. So a rate is paired
+with its convention as a type rather than by naming, since a naming convention
+is something a caller can get wrong silently.
+
+Simple compounding is not annual with one period. It is `1 / (1 + r t)` rather
+than a power, so the two agree at exactly one year and nowhere else — which is
+the one point somebody checking an implementation is most likely to pick.
+
+Conversions route through the discount factor rather than through a closed form
+per pair. Six conventions make thirty ordered pairs, and thirty chances to
+transpose a sign, against one shared path already tested in both directions.
+
+### Interpolation is a choice, so the curve names it
+
+*Log-linear on discount factors* is linear in `log P`, which makes the
+instantaneous forward piecewise constant — flat within each pillar interval and
+jumping at the pillars. Unrealistic as a picture of the market, extremely well
+behaved as arithmetic: the forwards are positive whenever the discount factors
+decrease, which is exactly the arbitrage-free condition.
+
+*Linear on zero rates* is the one most people reach for, and it does something
+its name does not advertise. Interpolating `z(t)` linearly makes `z(t) * t`
+quadratic and the forward its derivative, so forwards are piecewise linear with
+jumps at the pillars — and they can go negative from inputs containing no
+arbitrage at all.
+
+Two pillars show it. `z(1y) = 6%` and `z(2y) = 3.5%` give discount factors of
+0.941765 and 0.932394, strictly decreasing, so the inputs are clean and the
+average forward over the year is a positive 1%. Log-linear returns exactly that,
+flat. Linear on zero rates returns a ramp from +3% down to **−1%**, crossing
+zero around 1.7 years — a negative rate manufactured by the interpolation from
+data that contained none. Both figures are in the test suite, and
+`instantaneous_forward` makes them inspectable on any curve.
+
+### Extrapolation is refused
+
+Past the last pillar there is no information. Returning the last discount factor
+is not a neutral default — it asserts that every forward rate beyond the curve
+is zero, which is a strong opinion stated silently. A caller who wants a flat
+extension can add a pillar and say so.
+
 ### Negative periods are refused
 
 A year fraction with the end before the start is a mistake in the caller —
@@ -147,7 +212,7 @@ the point it is asked for.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 122 tests
+pytest          # 240 tests
 mypy --strict
 ruff check .
 ```
