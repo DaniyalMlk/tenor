@@ -78,6 +78,13 @@ from .schedule import (
     generate,
 )
 from .solve import NoRoot, Root, bracket_root, brent, solve
+from .spread import (
+    BadSpread,
+    discounted_with_spread,
+    i_spread,
+    par_rate_at,
+    z_spread,
+)
 
 __version__ = "0.1.0"
 
@@ -91,6 +98,7 @@ __all__ = [
     "BadRate",
     "BadRisk",
     "BadSchedule",
+    "BadSpread",
     "Basis",
     "Bond",
     "BootstrapFailed",
@@ -136,11 +144,13 @@ __all__ = [
     "days_in_year",
     "denominator",
     "discount_factor",
+    "discounted_with_spread",
     "end_of_month",
     "flat_curve",
     "forward_rate",
     "generate",
     "ho_lee_convexity",
+    "i_spread",
     "instrument_risk",
     "is_end_of_february",
     "is_leap",
@@ -148,6 +158,7 @@ __all__ = [
     "level",
     "maturity_of",
     "node_forwards",
+    "par_rate_at",
     "rate_from_discount",
     "shape_duration",
     "shifted_by",
@@ -157,4 +168,5 @@ __all__ = [
     "tent_weights",
     "total_instrument_risk",
     "year_fraction",
+    "z_spread",
 ]
