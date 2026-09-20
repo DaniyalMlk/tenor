@@ -402,25 +402,30 @@ class Bond:
         standard shortcut, and it is harmless right up until one is used to
         hedge the other.
 
-        They differ for two reasons, and the smaller one is the one usually
-        given. The familiar reason is shape: a bond's yield is a weighted
-        average of the curve over its own flows, so shifting every zero rate by
-        a basis point moves that average by a basis point only if the curve is
-        flat. On a sloped curve, for a fifteen-year bullet, that is worth about
-        two parts in a thousand.
+        They differ for two reasons, and the one usually given is only half of
+        it. The familiar reason is shape: a bond's yield is a weighted average
+        of the curve over its own flows, so shifting every zero rate by a basis
+        point moves that average by a basis point only if the curve is flat. On
+        the sloped curve in the tests, for a fifteen-year bullet, that is
+        +1.01%.
 
-        The larger reason is that a basis point is not one quantity. Move a
+        The other reason is that a basis point is not one quantity. Move a
         *continuously compounded* zero rate by a basis point and you have moved
-        the equivalent semi-annual rate by rather more — by ``exp(z/2)``, which
-        is 1.5% at a 3% level. Against a bond whose yield is semi-annual, that
-        alone puts the two numbers 1.5% apart *on a perfectly flat curve*,
-        which is seven times the shape effect and in a case where the shape
-        effect is zero by construction.
+        the equivalent semi-annual rate by more — by ``exp(z/2)``, 1.5% at a 3%
+        level. Against a bond whose yield is semi-annual that alone puts the
+        two numbers 1.54% apart *on a perfectly flat curve*, where the shape
+        explanation predicts no difference at all.
 
-        So ``compounding`` says which rate the basis point is applied to.
-        Matching it to the bond's own frequency brings the two back to within
-        the convexity term; leaving it continuous does not, and the difference
-        is not the curve's shape however much it looks like it.
+        The two effects have opposite signs, which is the part worth knowing.
+        On that same sloped curve, with the shift left continuous — making both
+        mistakes at once — the numbers come out 0.23% apart: smaller than
+        either error alone. The discrepancy looks most negligible precisely
+        where it is least understood.
+
+        So ``compounding`` says which rate the basis point applies to. Matching
+        it to the bond's own frequency leaves only the shape and the convexity;
+        leaving it continuous does not, and what remains is then not the
+        curve's shape however much it resembles it.
         """
         return self.price_from_curve(curve, settlement) - self.price_from_curve(
             curve.shifted(shift, compounding), settlement
