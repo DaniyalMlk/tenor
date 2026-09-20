@@ -22,7 +22,6 @@ answer is going to be quoted.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
