@@ -235,6 +235,16 @@ def key_rates(
     base = value(curve)
     results = []
     for bucket, weight in zip(buckets, weights, strict=True):
+        if all(weight(one.time) == 0.0 for one in curve.pillars):
+            raise BadRisk(
+                f"the bucket at {bucket.name} covers no pillar of this curve, "
+                f"whose pillars sit at {[round(one.time, 4) for one in curve.pillars]}. "
+                "Its shift would move nothing and its key rate duration would come "
+                "back as zero - which reads as an absence of risk rather than an "
+                "absence of curve, and the risk it should have carried is silently "
+                "picked up by the neighbouring buckets instead. Put the buckets "
+                "where the curve has pillars, or build the curve with more of them."
+            )
         duration = shape_duration(
             value, curve, weight, shift=shift, compounding=compounding
         )
@@ -252,9 +262,7 @@ def buckets_from(curve: DiscountCurve, years: Sequence[float]) -> tuple[Bucket, 
         if one <= 0.0 or one > horizon:
             raise BadRisk(
                 f"a bucket at {one!r} years is outside the curve, which runs to "
-                f"{horizon:.4f}. A shift applied where the curve has no pillars "
-                "moves nothing, and a key rate duration of zero there would look "
-                "like an absence of risk rather than an absence of curve."
+                f"{horizon:.4f}."
             )
 
         made.append(Bucket(time=one))

@@ -116,8 +116,9 @@ value = lambda c: bond.price_from_curve(c, date(2021, 1, 4))
 shape_duration(value, curve, level())             # the total, as one number
 shape_duration(value, curve, slope(curve.times[-1]))   # response to a steepening
 
-for one in key_rates(value, curve, buckets_from(curve, [1, 3, 7, 10])):
+for one in key_rates(value, curve, buckets_from(curve, [0.5, 10])):
     one.bucket.name, one.duration, one.value      # where the exposure sits
+    # (a bucket in a gap between pillars is refused rather than returned as zero)
 
 for one in instrument_risk(value, built):
     one.name, one.value                           # what to trade against it

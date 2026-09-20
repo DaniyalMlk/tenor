@@ -287,12 +287,38 @@ def test_the_money_value_is_the_duration_times_price_times_the_bump() -> None:
 
 
 def test_a_bucket_off_the_curve_is_refused() -> None:
-    """A shift where there are no pillars moves nothing, which is not zero risk."""
     built = built_curve()
     with pytest.raises(BadRisk, match="outside the curve"):
         buckets_from(built.curve, [5.0, 50.0])
     with pytest.raises(BadRisk, match="outside the curve"):
         buckets_from(built.curve, [0.0])
+
+
+def test_a_bucket_covering_no_pillar_is_refused() -> None:
+    """Zero risk and no risk look identical in the output, and are not.
+
+    A bucket sitting in a gap between two distant pillars gets a shift that
+    moves nothing, so its key rate duration comes back as exactly zero - while
+    the risk it should have carried is quietly picked up by the neighbours, so
+    the total still adds up and nothing looks wrong. Found by a curve with
+    pillars at six months and ten years and buckets at three and seven.
+    """
+    sparse = bootstrap(
+        REFERENCE,
+        [
+            Deposit(REFERENCE, date(2021, 7, 5), 0.0035, Basis.ACT_360),
+            Swap(REFERENCE, date(2031, 1, 6), 0.0195),
+        ],
+        basis=Basis.ACT_365F,
+    )
+    value = bond_value(Bond(REFERENCE, date(2031, 1, 4), 0.05))
+    with pytest.raises(BadRisk, match="covers no pillar"):
+        key_rates(value, sparse.curve, buckets_from(sparse.curve, [1.0, 3.0, 7.0, 10.0]))
+
+    # Buckets that do sit on pillars are fine on the same curve.
+    parts = key_rates(value, sparse.curve, buckets_from(sparse.curve, [0.5, 10.0]))
+    assert len(parts) == 2
+    assert all(one.duration > 0.0 for one in parts)
 
 
 def test_something_worth_nothing_has_no_duration() -> None:
