@@ -72,10 +72,17 @@ the two numbers 0.23% apart — closer than either error alone.
 
 ## Phase 5 — Curve risk
 
-- [ ] Key rate durations against a set of curve buckets
-- [ ] Key rate durations sum to the total duration, as an identity the tests assert
-- [ ] Parallel, slope and curvature shifts
-- [ ] Bucketed DV01 against the bootstrapped instruments
+- [x] Key rate durations against a set of curve buckets
+- [x] Key rate durations sum to the total duration, as an identity the tests assert
+- [x] Parallel, slope and curvature shifts
+- [x] Bucketed DV01 against the bootstrapped instruments
+
+The two decompositions are not one set of numbers regrouped. Key rates shift the
+zero curve in a shape around one bucket; instrument risk shifts a quote and
+rebuilds the curve, which moves every zero rate out to that quote's maturity.
+The second is the one a hedge is put on in, and it is the one that depends on
+the interpolation: across the three schemes here the total agrees to 1.3% while
+the ten-year entry moves by 64% and the five-year changes sign.
 
 ## Phase 6 — Spreads and embedded options
 
