@@ -33,6 +33,17 @@ entirely by the interpolation, from data that contained none.
 The curve reports its own instantaneous forwards, so this is inspectable rather
 than theoretical, and both numbers above are in the test suite.
 
+*Monotone convex* is the third option and declines the trade-off. It
+interpolates the forward rate directly, under the constraint that it must
+average back to the discrete forward over each interval, so the pillars are
+repriced by an identity rather than by luck, the forward curve is continuous
+across them, and the positivity that log-linear gets for free is imposed
+explicitly instead of hoped for. On the counterexample above it returns forwards
+that stay non-negative across the whole interval. The construction is in
+:mod:`tenor.monotone`; what it costs is that a pillar set implying a negative
+discrete forward is refused rather than interpolated, because the positivity
+constraint has no meaning there.
+
 **Extrapolation is refused.** Past the last pillar there is no information, and
 returning the last value is not a neutral default — it is the assertion that all
 forward rates beyond the curve are zero, which is a strong opinion stated
@@ -47,8 +58,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from functools import cached_property
 
 from .daycount import Basis, year_fraction
+from .monotone import MonotoneConvex, NotMonotone
 from .rates import BadRate, Compounding, rate_from_discount
 
 
@@ -61,6 +74,9 @@ class Interpolation(str, Enum):
     #: Linear in the zero rate. Piecewise-linear forwards that can go negative
     #: between two positive zero rates.
     LINEAR_ZERO = "linear on zero rates"
+    #: Hagan-West. Continuous forwards, held non-negative, averaging back to the
+    #: discrete forward over every interval.
+    MONOTONE_CONVEX = "monotone convex"
 
 
 class OffCurve(ValueError):
@@ -253,6 +269,11 @@ class DiscountCurve:
             return self.pillars[index].discount
         if index == 0:
             return 1.0
+        if self.interpolation is Interpolation.MONOTONE_CONVEX:
+            # Unlike the other two, this scheme is not local: the shape inside
+            # one interval depends on the neighbouring discrete forwards, so the
+            # whole pillar set is fitted once and cached on the curve.
+            return self.monotone.discount_at(time)
         left, right = self.pillars[index - 1], self.pillars[index]
         weight = (time - left.time) / (right.time - left.time)
         if self.interpolation is Interpolation.LOG_LINEAR_DISCOUNT:
@@ -274,6 +295,32 @@ class DiscountCurve:
             )
             rate = (1.0 - weight) * left_rate + weight * right_rate
         return math.exp(-rate * time)
+
+    @cached_property
+    def monotone(self) -> MonotoneConvex:
+        """The fitted monotone convex interpolant over this curve's pillars.
+
+        Fitted on first use and kept, because the fit is global — every
+        interval's shape depends on its neighbours — and a curve is queried far
+        more often than it is built. Bootstrapping in particular evaluates a
+        trial curve at every instrument on every iteration.
+
+        Available whatever the curve's own interpolation is, which is what lets
+        a caller compare two schemes over identical pillars without rebuilding
+        anything.
+        """
+        if len(self.pillars) < 2:
+            raise BadCurve(
+                "monotone convex needs at least one interval, and this curve has "
+                "only its anchor"
+            )
+        try:
+            return MonotoneConvex.fit(
+                self.times,
+                tuple(-math.log(one.discount) for one in self.pillars),
+            )
+        except NotMonotone as bad:
+            raise BadCurve(str(bad)) from bad
 
     def zero_rate(
         self, day: date, compounding: Compounding = Compounding.CONTINUOUS
@@ -329,7 +376,14 @@ class DiscountCurve:
         This is the function that reveals what an interpolation is actually
         doing. Log-linear gives a step function; linear-on-zero gives a sawtooth
         that can dip below zero.
+
+        Monotone convex is the exception: its forward rate is the quantity it
+        interpolates, so it is returned analytically rather than differenced.
+        The two agree to the accuracy of the difference away from the pillars,
+        which the tests check rather than assert in a comment.
         """
+        if self.interpolation is Interpolation.MONOTONE_CONVEX:
+            return self.monotone.forward_at(min(max(time, 0.0), self.times[-1]))
         low = max(time - bump, 0.0)
         high = min(time + bump, self.times[-1])
         if high <= low:
