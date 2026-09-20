@@ -205,6 +205,34 @@ def test_a_dirty_price_no_yield_can_produce_is_refused() -> None:
         bond(0.05).yield_from_dirty(0.0, ISSUE)
 
 
+def test_the_yield_solve_tries_an_ordinary_bracket_before_the_guaranteed_one() -> None:
+    """Fast for real quotes, and still correct for absurd ones.
+
+    The bracket that must contain the yield runs to the pole at ``y = -f``,
+    where the price is near-vertical and interpolation is useless - so Brent
+    bisects most of a range no bond is quoted in. Trying an ordinary range
+    first cuts a fifteen-year bond at 96.5 from 54 iterations to 15. The wide
+    bracket is still there and still works, and this pins both halves.
+    """
+    subject = Bond(date(2021, 1, 4), date(2036, 1, 4), 0.05)
+    settlement = date(2021, 4, 15)
+
+    ordinary = subject.yield_from_dirty(96.5, settlement)
+    assert ordinary.converged
+    assert ordinary.iterations < 25
+    assert ordinary.bracket == (-0.5, 1.0)
+
+    # Past a dirty price of about 500,000 the narrow bracket runs out and the
+    # guaranteed one takes over. Nothing real gets here; correctness does.
+    extreme = subject.yield_from_dirty(1e6, settlement)
+    assert extreme.converged
+    assert extreme.value < -0.5
+    assert extreme.bracket[0] < -1.9
+    assert subject.dirty_price(extreme.value, settlement) == pytest.approx(
+        1e6, rel=1e-9
+    )
+
+
 # -- duration and convexity ---------------------------------------------------
 
 

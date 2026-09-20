@@ -294,12 +294,25 @@ class Bond:
         def objective(rate: float) -> float:
             return self.dirty_price(rate, settlement) - price
 
-        # The price falls monotonically in the yield, from the undiscounted sum
-        # of the flows down towards zero, so a bracket is known rather than
-        # searched for. The low end stops short of the pole at ``y = -f``.
-        low = -self.frequency.value + 1e-9
-        high = 10.0
-        return brent(objective, low, high, tolerance=1e-15)
+        # The price falls monotonically in the yield, from a pole at ``y = -f``
+        # down towards zero, so a bracket that must work is known rather than
+        # searched for: just inside the pole, and far above any real yield.
+        #
+        # It is also a terrible bracket. The function is near-vertical at the
+        # pole, so interpolation is useless there and Brent spends its first
+        # thirty-odd iterations bisecting a range no bond will ever be quoted
+        # in. Trying an ordinary range first and keeping the wide one as the
+        # fallback takes a fifteen-year bond quoted at 96.5 from 54 iterations
+        # to 15, without giving up the guarantee: the wide bracket is skipped
+        # only once the narrow one is known to contain a sign change. It covers
+        # every dirty price up to about 500,000 per 100 of notional.
+        for low, high in ((-0.5, 1.0), (-self.frequency.value + 1e-9, 1e3)):
+            if objective(low) * objective(high) <= 0.0:
+                return brent(objective, low, high, tolerance=1e-15)
+        raise BadBond(  # pragma: no cover - the wide bracket spans every price
+            f"no yield between {-self.frequency.value} and 1000 prices "
+            f"{self.name} at {price!r}"
+        )
 
     # -- sensitivity to the bond's own yield ----------------------------------
 
