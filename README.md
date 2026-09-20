@@ -9,10 +9,11 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-`ROADMAP.md` says what is built and what is not. Phase 1 — dates, day counts,
-holiday calendars and payment schedules — is done, and phase 2 — discount
-curves, compounding conventions and interpolation — is done but for the
-monotone convex scheme.
+`ROADMAP.md` says what is built and what is not. Phases 1 to 3 are done: dates,
+day counts, holiday calendars and payment schedules; discount curves,
+compounding conventions and three interpolation schemes; and a bootstrapper that
+builds a curve from deposits, futures and par swaps. Bond analytics, curve risk
+and option-adjusted spreads are next.
 
 ## Using it
 
@@ -61,6 +62,28 @@ curve.reprices_pillars()           # True, and asserted rather than assumed
 smooth = curve.with_interpolation(Interpolation.MONOTONE_CONVEX)
 smooth.instantaneous_forward(2.5)  # continuous across the pillars, and positive
 smooth.monotone.segments[1].region # which of the four shapes that interval took
+```
+
+```python
+from tenor import Deposit, Future, Swap, bootstrap, ho_lee_convexity
+
+built = bootstrap(
+    date(2021, 1, 4),
+    [
+        Deposit(date(2021, 1, 4), date(2021, 7, 5), 0.0035, Basis.ACT_360),
+        Future(date(2021, 9, 15), date(2021, 12, 15), 99.55, Basis.ACT_360,
+               convexity=ho_lee_convexity(0.01, 0.70, 0.95)),
+        Swap(date(2021, 1, 4), date(2031, 1, 6), 0.0195),
+    ],
+    basis=Basis.ACT_365F,
+    interpolation=Interpolation.MONOTONE_CONVEX,
+)
+
+built.curve.zero_rate(date(2028, 6, 1))
+built.sweeps          # how many passes it took to settle
+built.worst_error     # ~1e-15: every quote still prices to par
+built.reprices()      # the identity, asserted rather than assumed
+built.solutions[2]    # the solve itself: iterations, bracket, residual
 ```
 
 ## Design
@@ -229,6 +252,50 @@ over its neighbouring discrete forwards, and that range is empty once one of
 them is negative. Those inputs contain an arbitrage — discount factors that rise
 over an interval — so the honest answer is the error rather than a confident
 number from a clamp that no longer means anything.
+
+### A sequential bootstrap is wrong for a smooth interpolation
+
+Each instrument pins down the discount factor at its own maturity given every
+shorter one, so the obvious method is to solve them one at a time in order. That
+is right for a local interpolation and wrong for any scheme whose shape at one
+maturity depends on its neighbours — monotone convex, any spline. Adding pillar
+`i + 1` changes the curve *before* `t_i` too, and the instruments already solved
+stop repricing.
+
+Nothing raises. No discount factor looks unreasonable. The curve is out by
+around ten basis points in the middle of an interval, which is the size of the
+thing being measured. On the test strip, one sequential pass under monotone
+convex leaves the September future mispriced by 2.6e-05 of present value on unit
+notional — and leaves both local schemes exactly right, which is how the bug
+survives.
+
+So the bootstrapper sweeps: the sequential pass, then repeated passes re-solving
+every pillar against the shape the later ones imposed, until all instruments
+reprice at once. It reports how many it took — one for the local schemes, seven
+for monotone convex — because that number describes how much work the curve
+took and a strip that suddenly needs many more is saying something.
+
+The unknown solved for is the discount factor itself rather than a rate
+parametrising it, which buys an exact bracket: a pillar's arbitrage-free range
+is its two neighbouring discount factors. Solving in rate space means guessing a
+range and widening it, and widening the wrong way builds a trial curve that
+monotone convex then refuses — an exception to catch in place of a bracket that
+was already known.
+
+### Futures are not forwards
+
+A futures contract is margined daily and a forward settles once, so the holder
+receives cash exactly when rates rise and reinvests it at the higher rate. The
+futures rate therefore sits *above* the forward rate it stands in for, and the
+gap grows with the product of the two maturities.
+
+The number is bigger than people expect. On 1% normal volatility a three-month
+contract starting in one year is adjusted by 0.6 basis points; the same contract
+starting in ten years is adjusted by **51**. `Future` takes the adjustment
+explicitly and defaults it to zero rather than computing one, because computing
+it needs a volatility and defaulting would be asserting one. `ho_lee_convexity`
+provides it when a volatility is available, and reproduces Hull's worked
+example — 47.5 basis points at 1.2% and eight years — in the test suite.
 
 ### Extrapolation is refused
 

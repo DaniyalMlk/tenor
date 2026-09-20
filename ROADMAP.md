@@ -41,10 +41,19 @@ arbitrage they are.
 
 ## Phase 3 — Bootstrapping
 
-- [ ] Curve built from deposits, futures and par swaps
-- [ ] Every input instrument reprices to par, as an identity the tests assert
-- [ ] Futures convexity adjustment, applied explicitly and reported
-- [ ] A curve that cannot be built says which instrument broke it
+- [x] Curve built from deposits, futures and par swaps
+- [x] Every input instrument reprices to par, as an identity the tests assert
+- [x] Futures convexity adjustment, applied explicitly and reported
+- [x] A curve that cannot be built says which instrument broke it
+
+Solving each instrument in turn for the discount factor at its own maturity is
+the standard method and it is wrong for any interpolation whose shape at one
+maturity depends on its neighbours. Adding a pillar moves the curve before it as
+well, so the instruments already solved stop repricing — silently, by about ten
+basis points in the middle of an interval. The sequential pass is therefore
+followed by sweeps until every instrument reprices at once, and the number of
+sweeps is reported: one for the local schemes, seven for monotone convex over
+this strip.
 
 ## Phase 4 — Bond analytics
 
