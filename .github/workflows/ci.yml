@@ -79,5 +79,58 @@ jobs:
           )
           assert len(schedule) == 7, len(schedule)
           assert schedule.has_stub
-          print(f"three 30/360 conventions gave {sorted(set(counts.values()))} days")
+
+          # And the whole chain, since the library is no longer only conventions:
+          # quotes to curve to bond, with the identity the curve rests on.
+          from tenor import Bond, Deposit, Swap, bootstrap
+
+          reference = date(2021, 1, 5)
+          built = bootstrap(
+              reference,
+              [
+                  Deposit(reference, date(2021, 7, 5), 0.002, Basis.ACT_360),
+                  Swap(reference, date(2026, 1, 5), 0.015),
+                  Swap(reference, date(2031, 1, 5), 0.022),
+              ],
+              basis=Basis.ACT_365F,
+          )
+          assert built.reprices(1e-12), built.worst_error
+          price = Bond(reference, date(2031, 1, 5), 0.05).price_from_curve(
+              built.curve, reference
+          )
+          assert 100.0 < price < 200.0, price
+          print(f"three 30/360 conventions gave {sorted(set(counts.values()))} days; "
+                f"curve worst error {built.worst_error:.2e}; bond at {price:.6f}")
           PY
+
+  example:
+    name: The worked example reproduces its published figures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Worked example
+        # Exits non-zero if any published figure fails to reproduce, so a
+        # change to the numerics cannot quietly move a number that has been in
+        # print for years.
+        run: python examples/worked.py
+      - name: The command line runs over the bundled quotes
+        run: |
+          tenor curve examples/quotes.txt --reference 2021-01-05 --basis ACT_365F
+          tenor curve examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+            --interpolation MONOTONE_CONVEX
+          tenor price examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+            --maturity 2031-01-05 --coupon 0.05 --quote 120
+          tenor risk examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+            --maturity 2031-01-05 --coupon 0.05 --buckets 0.5 2 5 10
+          tenor option examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+            --maturity 2031-01-05 --coupon 0.05 --volatility 0.15 \
+            --first-call 2026-01-05
+          tenor --json curve examples/quotes.txt --reference 2021-01-05 \
+            --basis ACT_365F > /dev/null
