@@ -225,12 +225,11 @@ def test_a_curve_reprices_its_own_pillars() -> None:
         assert curve.zero_rate(day) == pytest.approx(rate, rel=1e-12)
 
 
-@pytest.mark.parametrize(
-    "interpolation", [Interpolation.LOG_LINEAR_DISCOUNT, Interpolation.LINEAR_ZERO]
-)
-def test_both_interpolations_reprice_the_pillars(
+@pytest.mark.parametrize("interpolation", list(Interpolation))
+def test_every_interpolation_reprices_the_pillars(
     interpolation: Interpolation,
 ) -> None:
+    """Parametrised over the enum, so a scheme added later is covered at once."""
     assert build(interpolation).reprices_pillars()
 
 
@@ -420,6 +419,122 @@ def test_the_two_interpolations_agree_at_the_pillars_and_nowhere_else() -> None:
     assert log_linear.discount_at(2.0) != pytest.approx(
         linear.discount_at(2.0), rel=1e-9
     )
+
+
+# -- monotone convex ---------------------------------------------------------
+
+
+def test_monotone_convex_holds_the_forward_positive_where_linear_zero_does_not() -> None:
+    """The same counterexample, put to the scheme that is meant to survive it.
+
+    Linear on zero rates ramps from +3% to -1% across this interval. Log-linear
+    stays flat at the 1% average. Monotone convex is the only one of the three
+    that both varies across the interval and stays non-negative, which is the
+    entire reason for its existence.
+    """
+    pillars = [(date(2022, 1, 4), 0.060), (date(2023, 1, 4), 0.035)]
+    monotone = DiscountCurve.from_zeros(
+        REFERENCE,
+        pillars,
+        basis=Basis.ACT_365F,
+        interpolation=Interpolation.MONOTONE_CONVEX,
+    )
+    linear = monotone.with_interpolation(Interpolation.LINEAR_ZERO)
+
+    grid = [1.0 + 0.05 * step for step in range(1, 20)]
+    monotone_forwards = [monotone.instantaneous_forward(time) for time in grid]
+    linear_forwards = [linear.instantaneous_forward(time) for time in grid]
+
+    assert min(linear_forwards) < 0.0
+    assert min(monotone_forwards) >= 0.0
+    # And it is not flat: it falls across the interval, as the data says it must.
+    assert max(monotone_forwards) - min(monotone_forwards) > 1e-3
+    assert monotone_forwards == sorted(monotone_forwards, reverse=True)
+
+    # The figure quoted in the README: +2% at the near pillar, straight down to
+    # exactly 0% at the far one. The zero is the positivity clamp, not the
+    # data - the unconstrained node forward there extrapolates to -0.25%.
+    assert monotone.instantaneous_forward(1.0) == pytest.approx(0.02, abs=1e-9)
+    assert monotone.instantaneous_forward(2.0) == pytest.approx(0.0, abs=1e-12)
+    for time in grid:
+        expected = 0.02 - 0.02 * (time - 1.0)
+        assert monotone.instantaneous_forward(time) == pytest.approx(expected, abs=1e-9)
+
+
+def test_monotone_convex_reprices_the_pillars_to_machine_precision() -> None:
+    """Not to a tolerance: the interval shapes integrate to zero by construction."""
+    curve = build(Interpolation.MONOTONE_CONVEX)
+    for pillar in curve.pillars:
+        assert curve.discount_at(pillar.time) == pytest.approx(pillar.discount, abs=1e-15)
+        assert curve.discount(pillar.day) == pytest.approx(pillar.discount, abs=1e-15)
+    assert curve.reprices_pillars(tolerance=1e-15)
+
+
+def test_the_analytic_forward_agrees_with_a_central_difference() -> None:
+    """Two independent routes to the same number.
+
+    The analytic forward reads the interpolated shape directly; the difference
+    goes through the discount factors, which are built from the closed-form
+    integral of that shape. A sign error in one region's integral would split
+    them.
+    """
+    curve = build(Interpolation.MONOTONE_CONVEX)
+    bump = 1e-6
+    for step in range(1, 100):
+        time = 10.0 * step / 100.0
+        analytic = curve.instantaneous_forward(time)
+        differenced = -(
+            math.log(curve.discount_at(time + bump))
+            - math.log(curve.discount_at(time - bump))
+        ) / (2.0 * bump)
+        assert analytic == pytest.approx(differenced, abs=1e-8)
+
+
+def test_monotone_convex_gives_continuous_forwards_across_the_pillars() -> None:
+    """Log-linear jumps at every pillar. This one does not."""
+    curve = build(Interpolation.MONOTONE_CONVEX)
+    log_linear = curve.with_interpolation(Interpolation.LOG_LINEAR_DISCOUNT)
+    for pillar in curve.pillars[1:-1]:
+        step = 1e-4
+        before = curve.instantaneous_forward(pillar.time - step)
+        after = curve.instantaneous_forward(pillar.time + step)
+        assert before == pytest.approx(after, abs=1e-5)
+        jump = abs(
+            log_linear.instantaneous_forward(pillar.time + step)
+            - log_linear.instantaneous_forward(pillar.time - step)
+        )
+        assert jump > 1e-4
+
+
+def test_monotone_convex_refuses_a_curve_containing_an_arbitrage() -> None:
+    """Discount factors that rise put the positivity clamp out of reach."""
+    rising = DiscountCurve.from_discounts(
+        REFERENCE,
+        [(date(2022, 1, 4), 0.98), (date(2023, 1, 4), 0.99)],
+        basis=Basis.ACT_365F,
+        interpolation=Interpolation.MONOTONE_CONVEX,
+    )
+    with pytest.raises(BadCurve, match="arbitrage"):
+        rising.discount_at(1.5)
+
+
+def test_the_monotone_fit_is_available_whatever_the_curve_interpolates_with() -> None:
+    """So two schemes can be compared over identical pillars without rebuilding."""
+    log_linear = build(Interpolation.LOG_LINEAR_DISCOUNT)
+    fitted = log_linear.monotone
+    assert fitted.times == log_linear.times
+    assert log_linear.monotone is fitted  # fitted once and kept
+    monotone = log_linear.with_interpolation(Interpolation.MONOTONE_CONVEX)
+    assert monotone.discount_at(3.3) == pytest.approx(fitted.discount_at(3.3))
+    assert log_linear.discount_at(3.3) != pytest.approx(fitted.discount_at(3.3))
+
+
+def test_monotone_convex_still_refuses_to_extrapolate() -> None:
+    curve = build(Interpolation.MONOTONE_CONVEX)
+    with pytest.raises(OffCurve, match="past the curve"):
+        curve.discount(date(2032, 1, 4))
+    # But the horizon itself is queryable, rounding and all.
+    assert curve.discount(curve.horizon) == pytest.approx(curve.pillars[-1].discount)
 
 
 # -- querying ----------------------------------------------------------------
