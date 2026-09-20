@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .bond import Accrual, BadBond, Bond, Cashflow
 from .bootstrap import BootstrapFailed, Bootstrapped, bootstrap
 from .calendar import WEEKENDS_ONLY, Calendar, Rolling, calendar_from
 from .curve import (
@@ -65,15 +66,19 @@ __version__ = "0.1.0"
 
 __all__ = [
     "WEEKENDS_ONLY",
+    "Accrual",
+    "BadBond",
     "BadCurve",
     "BadInstrument",
     "BadPeriod",
     "BadRate",
     "BadSchedule",
     "Basis",
+    "Bond",
     "BootstrapFailed",
     "Bootstrapped",
     "Calendar",
+    "Cashflow",
     "Compounding",
     "Deposit",
     "DiscountCurve",
