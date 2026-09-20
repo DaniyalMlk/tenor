@@ -9,13 +9,14 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-`ROADMAP.md` says what is built and what is not. Phases 1 to 5 are done: dates,
+`ROADMAP.md` says what is built and what is not. Phases 1 to 6 are done: dates,
 day counts, holiday calendars and payment schedules; discount curves,
 compounding conventions and three interpolation schemes; a bootstrapper that
 builds a curve from deposits, futures and par swaps; bond analytics — price,
-yield, duration, convexity and basis point values; and curve risk — key rate
-durations, shape shifts and instrument-by-instrument risk. Spreads and embedded
-options are next, then a command line and a worked example.
+yield, duration, convexity and basis point values; curve risk — key rate
+durations, shape shifts and instrument-by-instrument risk; and spreads —
+Z-spread, a calibrated short rate lattice, American exercise and
+option-adjusted spread. A command line and a worked example are what remain.
 
 ## Using it
 
@@ -411,6 +412,48 @@ five years *down*, and for a bond whose risk sits past ten years that fall can
 outweigh the rise nearer in. It happens under every scheme here; under monotone
 convex the long-end effect is about three times larger, and that is enough to
 flip the sign.
+
+### A bond with no spread has an I-spread anyway
+
+Z-spread adds a constant to every zero rate until the whole curve reproduces the
+bond's price. I-spread subtracts one par swap rate from one yield.
+
+The difference is clearest on a bond that has no spread at all — priced exactly
+on the curve. Z-spread answers zero, by construction. I-spread, on the test
+curve, answers:
+
+| maturity | I-spread | Z-spread |
+|---|---|---|
+| 2 years | −0.14bp | 0 |
+| 5 years | −0.46bp | 0 |
+| 10 years | −1.62bp | 0 |
+| 15 years | −6.03bp | 0 |
+
+None of that is spread. It is a single benchmark point at the maturity being
+compared against coupons discounted across the whole curve, and it grows with
+maturity and with distance from par. On a flat curve every figure is zero to
+two hundredths of a basis point, which is why a flat curve tests nothing here.
+
+### Z-spread minus OAS is what the option costs
+
+A callable bond's cash flows are not known: whether the issuer redeems depends
+on where rates are when the call date arrives. One discounting curve cannot say,
+because there is only one of it. So the curve becomes a Black-Derman-Toy tree,
+calibrated so that it reprices the curve's own zero coupon bonds to 1e-16 —
+exactly, because everything measured on it is quoted in basis points and a
+calibration error is indistinguishable from a spread.
+
+Then one price, two questions. What spread reproduces it if the option is
+ignored? That is the Z-spread. What spread reproduces it if the option is
+modelled? That is the OAS. The difference is the option. For a 5% bond callable
+at par from year five, on the test curve at 15% volatility, it is **89 basis
+points** — which is what the holder is being paid for being short the call, and
+what a Z-spread would have counted as income.
+
+A put runs the other way and its option cost is negative, because the holder is
+long it. Implementing one and negating it for the other produces a number that
+still looks like a spread, so both directions are tested, along with the two
+cases where an option never binds and the bullet must come back exactly.
 
 ### Extrapolation is refused
 
