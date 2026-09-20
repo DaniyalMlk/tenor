@@ -9,11 +9,12 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-`ROADMAP.md` says what is built and what is not. Phases 1 to 3 are done: dates,
+`ROADMAP.md` says what is built and what is not. Phases 1 to 4 are done: dates,
 day counts, holiday calendars and payment schedules; discount curves,
-compounding conventions and three interpolation schemes; and a bootstrapper that
-builds a curve from deposits, futures and par swaps. Bond analytics, curve risk
-and option-adjusted spreads are next.
+compounding conventions and three interpolation schemes; a bootstrapper that
+builds a curve from deposits, futures and par swaps; and bond analytics — price,
+yield, duration, convexity and basis point values. Curve risk and
+option-adjusted spreads are next.
 
 ## Using it
 
@@ -84,6 +85,26 @@ built.sweeps          # how many passes it took to settle
 built.worst_error     # ~1e-15: every quote still prices to par
 built.reprices()      # the identity, asserted rather than assumed
 built.solutions[2]    # the solve itself: iterations, bracket, residual
+```
+
+```python
+from tenor import Bond, Compounding
+
+bond = Bond(date(2021, 1, 4), date(2031, 1, 4), 0.05)   # 5% of 2031
+
+bond.accrued(date(2021, 4, 15))              # per 100, on the stated convention
+bond.clean_price(0.043, date(2021, 4, 15))   # quoted price
+bond.yield_from_clean(96.5, date(2021, 4, 15))  # solved, with its convergence
+
+bond.macaulay_duration(0.043, date(2021, 1, 4))   # a time, in years
+bond.modified_duration(0.043, date(2021, 1, 4))   # a sensitivity to its yield
+bond.convexity(0.043, date(2021, 1, 4))           # in closed form
+
+curve = built.curve
+bond.price_from_curve(curve, date(2021, 1, 4))
+bond.pv01(bond.curve_yield(curve, date(2021, 1, 4)).value, date(2021, 1, 4))
+bond.dv01(curve, date(2021, 1, 4), compounding=Compounding.SEMI_ANNUAL)
+bond.effective_duration(curve, date(2021, 1, 4))
 ```
 
 ## Design
@@ -296,6 +317,45 @@ explicitly and defaults it to zero rather than computing one, because computing
 it needs a volatility and defaulting would be asserting one. `ho_lee_convexity`
 provides it when a volatility is available, and reproduces Hull's worked
 example — 47.5 basis points at 1.2% and eight years — in the test suite.
+
+### DV01 and PV01 are not the same number, for two reasons
+
+One moves the bond's own yield by a basis point; the other moves the whole
+curve. They are routinely treated as interchangeable, which is harmless right
+up until one is used to hedge the other.
+
+The reason usually given is shape: a yield is a weighted average of the curve
+over the bond's flows, so shifting every zero rate by a basis point moves that
+average by a basis point only if the curve is flat. On the test curve, for a
+fifteen-year bullet, that is worth **+1.01%**.
+
+The reason not usually given is that a basis point is not one quantity. A basis
+point of *continuously compounded* zero rate moves the equivalent semi-annual
+rate by `exp(z/2)` times as much — 1.5% at a 3% level. Against a semi-annual
+yield that puts the two numbers **−1.54%** apart on a *perfectly flat* curve,
+where the shape explanation predicts no gap at all.
+
+And the two have opposite signs. Make both mistakes at once — a continuous
+shift measured against a semi-annual yield, on a sloped curve — and the answer
+comes out **0.23%** apart, closer than either error alone would put it. The
+discrepancy looks most negligible exactly where it is least understood.
+
+`shifted()` and `dv01()` therefore take the compounding as an argument. Match it
+to the bond and only shape and convexity remain; leave it continuous and what is
+left is not the curve's shape, however much it looks like it. All four numbers
+are in the test suite.
+
+### Accrued interest is a fraction of one of two things
+
+Either the day count fraction since the last coupon, or the fraction of the
+coupon period. Under 30/360 they agree exactly, because a semi-annual period is
+half a year by construction — which is why the disagreement survives, since the
+case people test is the one where it cannot appear.
+
+Under ACT/365F they differ by twice the period's actual length over 365. Three
+months into a 181-day period on a 5% coupon, that is just over a cent per 100,
+about 0.8% of accrued. `Accrual` names both; neither is a default that happens
+silently.
 
 ### Extrapolation is refused
 

@@ -57,10 +57,18 @@ this strip.
 
 ## Phase 4 — Bond analytics
 
-- [ ] Price from yield and yield from price, with the solver's convergence reported
-- [ ] Accrued interest, clean and dirty price
-- [ ] Macaulay, modified and effective duration; convexity
-- [ ] DV01 and PV01, and the difference between them stated
+- [x] Price from yield and yield from price, with the solver's convergence reported
+- [x] Accrued interest, clean and dirty price
+- [x] Macaulay, modified and effective duration; convexity
+- [x] DV01 and PV01, and the difference between them stated
+
+The difference between DV01 and PV01 has two sources, not one. Shape — a yield
+is a weighted average of the curve over the bond's own flows — is worth +1.01%
+on a fifteen-year bullet here. Compounding, because a basis point of
+continuously compounded rate is not a basis point of the semi-annual rate that
+discounts identically, is worth −1.54%, and applies even on a flat curve where
+shape cannot. They have opposite signs, so making both mistakes at once leaves
+the two numbers 0.23% apart — closer than either error alone.
 
 ## Phase 5 — Curve risk
 
