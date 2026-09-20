@@ -9,12 +9,13 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-`ROADMAP.md` says what is built and what is not. Phases 1 to 4 are done: dates,
+`ROADMAP.md` says what is built and what is not. Phases 1 to 5 are done: dates,
 day counts, holiday calendars and payment schedules; discount curves,
 compounding conventions and three interpolation schemes; a bootstrapper that
-builds a curve from deposits, futures and par swaps; and bond analytics — price,
-yield, duration, convexity and basis point values. Curve risk and
-option-adjusted spreads are next.
+builds a curve from deposits, futures and par swaps; bond analytics — price,
+yield, duration, convexity and basis point values; and curve risk — key rate
+durations, shape shifts and instrument-by-instrument risk. Spreads and embedded
+options are next, then a command line and a worked example.
 
 ## Using it
 
@@ -105,6 +106,22 @@ bond.price_from_curve(curve, date(2021, 1, 4))
 bond.pv01(bond.curve_yield(curve, date(2021, 1, 4)).value, date(2021, 1, 4))
 bond.dv01(curve, date(2021, 1, 4), compounding=Compounding.SEMI_ANNUAL)
 bond.effective_duration(curve, date(2021, 1, 4))
+```
+
+```python
+from tenor import buckets_from, instrument_risk, key_rates, level, shape_duration, slope
+
+value = lambda c: bond.price_from_curve(c, date(2021, 1, 4))
+
+shape_duration(value, curve, level())             # the total, as one number
+shape_duration(value, curve, slope(curve.times[-1]))   # response to a steepening
+
+for one in key_rates(value, curve, buckets_from(curve, [0.5, 10])):
+    one.bucket.name, one.duration, one.value      # where the exposure sits
+    # (a bucket in a gap between pillars is refused rather than returned as zero)
+
+for one in instrument_risk(value, built):
+    one.name, one.value                           # what to trade against it
 ```
 
 ## Design
@@ -356,6 +373,44 @@ Under ACT/365F they differ by twice the period's actual length over 365. Three
 months into a 181-day period on a 5% coupon, that is just over a cent per 100,
 about 0.8% of accrued. `Accrual` names both; neither is a default that happens
 silently.
+
+### The total risk is the market's; the hedge is the curve builder's
+
+There are two ways to break a duration down and they are not one set of numbers
+regrouped.
+
+*Key rate durations* shift the zero curve in a shape localised around one
+bucket. They answer where the exposure sits. Their shapes are built to add to
+one at every pillar, so they sum back to the total duration — an identity, and
+one the tests check by measuring the residual at three bump sizes and asserting
+it falls as the square of the bump, rather than by accepting a small number
+once.
+
+*Instrument risk* shifts a quote, rebuilds the curve and measures that. It
+answers what to trade. A ten-year swap quote does not move the ten-year zero
+rate alone; it moves every zero rate out to ten years, because the quote is a
+statement about a whole annuity.
+
+The difference is not academic. For the same bond on the same quotes, across
+the three interpolations:
+
+| | total | 5y swap | 10y swap | 20y swap |
+|---|---|---|---|---|
+| log-linear | 0.1509 | +0.0039 | +0.0534 | +0.0926 |
+| linear on zeros | 0.1529 | +0.0041 | +0.0762 | +0.0715 |
+| monotone convex | 0.1516 | **−0.0066** | +0.0878 | +0.0694 |
+
+The totals span 1.3%. The ten-year entry moves by 64%, the twenty-year by −25%,
+and the five-year changes sign. The total is what the quotes determine; the
+split between them is what the interpolation decided, which is an assumption
+about the gaps between quotes rather than anything the market said.
+
+The negative entry is a real answer, not an artefact. Raising the five-year par
+swap rate while the longer par rates are held fixed forces the forwards beyond
+five years *down*, and for a bond whose risk sits past ten years that fall can
+outweigh the rise nearer in. It happens under every scheme here; under monotone
+convex the long-end effect is about three times larger, and that is enough to
+flip the sign.
 
 ### Extrapolation is refused
 
