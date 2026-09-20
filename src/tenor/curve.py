@@ -414,6 +414,70 @@ class DiscountCurve:
             interpolation=interpolation,
         )
 
+    def shifted(
+        self,
+        amount: float,
+        compounding: Compounding = Compounding.CONTINUOUS,
+    ) -> DiscountCurve:
+        """Every zero rate moved by ``amount``, under a stated compounding.
+
+        A parallel shift, and the building block every risk number in this
+        library is measured against. The shift is in the same units as the
+        rates, so a basis point is ``0.0001``.
+
+        **The compounding is an argument because "a basis point" is not one
+        number.** A basis point on a continuously compounded zero rate is a
+        larger move than a basis point on the semi-annual rate that discounts
+        identically, by a factor of ``exp(z/2)`` — 1.5% at a 3% level. That is
+        far too small to notice in a price and far too large to ignore in a
+        hedge ratio, and it is the main reason a curve-shift risk number and a
+        yield-shift one disagree on a curve that is perfectly flat. So the
+        caller says which rate they are moving rather than inheriting whichever
+        convention the curve happened to be built from.
+
+        Continuous is the default because it is the convention curve
+        mathematics is written in, and because ``P(t) * exp(-amount * t)`` is
+        then the whole operation — no rate has to be recovered first, so the
+        anchor, where there is no zero rate at all, needs no special case.
+
+        The shift applies at the pillars; between them the interpolation
+        decides. A shifted curve is therefore not in general the original
+        translated upwards, and under monotone convex it need not even have the
+        same interval regions. That is a property of interpolating rather than
+        a defect — the alternative is a shift that leaves the curve repricing
+        nothing.
+        """
+        if compounding is Compounding.CONTINUOUS:
+            moved = [
+                (one, one.discount * math.exp(-amount * one.time))
+                for one in self.pillars
+            ]
+        else:
+            from .rates import discount_factor
+
+            moved = [
+                (
+                    one,
+                    one.discount
+                    if one.time == 0.0
+                    else discount_factor(
+                        rate_from_discount(one.discount, one.time, compounding) + amount,
+                        one.time,
+                        compounding,
+                    ),
+                )
+                for one in self.pillars
+            ]
+        return DiscountCurve(
+            reference=self.reference,
+            pillars=tuple(
+                Pillar(day=one.day, discount=factor, time=one.time)
+                for one, factor in moved
+            ),
+            basis=self.basis,
+            interpolation=self.interpolation,
+        )
+
 
 #: Year fractions are computed rather than stored, so a pillar looked up by its
 #: own date can miss by a rounding error. A microsecond of a year is far below
