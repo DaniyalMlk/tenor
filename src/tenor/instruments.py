@@ -17,10 +17,16 @@ futures contract is margined daily; a forward rate agreement settles once at
 maturity. The margin flows are positively correlated with the rate — you receive
 cash when rates rise, and reinvest it at the higher rate — so a futures contract
 is worth more to its holder than the equivalent forward, and its implied rate
-sits above the forward rate. The gap is the convexity adjustment. It is small at
-the front (under a basis point inside a year) and grows with the square of
-maturity: at ten years, on 1% normal volatility, it is about 5bp, which is
-several times the bid-offer.
+sits above the forward rate. The gap is the convexity adjustment. It is
+negligible at the front and emphatically not further out, because it grows with
+the *product* of the two maturities and so roughly with the square. On 1% normal
+volatility a three-month contract starting in one year is adjusted by 0.6 basis
+points, which nobody would miss; the same contract starting in ten years is
+adjusted by **51** basis points, which is most of a quarter-point.
+
+That figure is worth stating because it is the one people expect to be small.
+Hull's worked example is the same arithmetic: at 1.2% volatility and eight
+years, the adjustment is 47.5 basis points. Both numbers are in the test suite.
 
 So :class:`Future` carries the adjustment explicitly and reports it. A
 bootstrapper that quietly treats the futures rate as a forward rate is wrong by
