@@ -91,7 +91,7 @@ def test_the_classification_is_symmetric_under_negation() -> None:
 def test_every_pair_of_deviations_lands_in_a_region() -> None:
     """The four regions partition the plane, with no pair falling through."""
     rng = random.Random(3)
-    seen = set()
+    seen: set[Region] = set()
     for _ in range(20000):
         g0 = rng.uniform(-0.2, 0.2)
         g1 = rng.uniform(-0.2, 0.2)
@@ -420,7 +420,7 @@ def test_a_flat_input_stays_flat() -> None:
 def test_every_region_is_reached_by_real_curves() -> None:
     """A region no input reaches is untested code, whatever the unit tests say."""
     rng = random.Random(41)
-    reached = set()
+    reached: set[Region] = set()
     for _ in range(1500):
         times, integrated, _ = _arbitrage_free_curve(rng, intervals=rng.randint(1, 8))
         fitted = MonotoneConvex.fit(times, integrated)
