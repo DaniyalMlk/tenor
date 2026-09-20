@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .bootstrap import BootstrapFailed, Bootstrapped, bootstrap
 from .calendar import WEEKENDS_ONLY, Calendar, Rolling, calendar_from
 from .curve import (
     BadCurve,
@@ -20,6 +21,16 @@ from .daycount import (
     is_end_of_february,
     is_leap,
     year_fraction,
+)
+from .instruments import (
+    BadInstrument,
+    Deposit,
+    Future,
+    Instrument,
+    Swap,
+    ho_lee_convexity,
+    maturity_of,
+    start_of,
 )
 from .monotone import (
     MonotoneConvex,
@@ -48,22 +59,30 @@ from .schedule import (
     end_of_month,
     generate,
 )
+from .solve import NoRoot, Root, bracket_root, brent, solve
 
 __version__ = "0.1.0"
 
 __all__ = [
     "WEEKENDS_ONLY",
     "BadCurve",
+    "BadInstrument",
     "BadPeriod",
     "BadRate",
     "BadSchedule",
     "Basis",
+    "BootstrapFailed",
+    "Bootstrapped",
     "Calendar",
     "Compounding",
+    "Deposit",
     "DiscountCurve",
     "Frequency",
+    "Future",
+    "Instrument",
     "Interpolation",
     "MonotoneConvex",
+    "NoRoot",
     "NotMonotone",
     "OffCurve",
     "Period",
@@ -71,11 +90,16 @@ __all__ = [
     "Rate",
     "Region",
     "Rolling",
+    "Root",
     "Schedule",
     "Segment",
     "Stub",
+    "Swap",
     "__version__",
     "add_months",
+    "bootstrap",
+    "bracket_root",
+    "brent",
     "calendar_from",
     "classify",
     "convert",
@@ -87,9 +111,13 @@ __all__ = [
     "flat_curve",
     "forward_rate",
     "generate",
+    "ho_lee_convexity",
     "is_end_of_february",
     "is_leap",
+    "maturity_of",
     "node_forwards",
     "rate_from_discount",
+    "solve",
+    "start_of",
     "year_fraction",
 ]
