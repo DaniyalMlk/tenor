@@ -57,6 +57,10 @@ curve.zero_rate(date(2024, 6, 1), Compounding.SEMI_ANNUAL)
 curve.forward_rate(date(2023, 1, 4), date(2024, 1, 4))
 curve.instantaneous_forward(2.5)   # what the interpolation is really doing
 curve.reprices_pillars()           # True, and asserted rather than assumed
+
+smooth = curve.with_interpolation(Interpolation.MONOTONE_CONVEX)
+smooth.instantaneous_forward(2.5)  # continuous across the pillars, and positive
+smooth.monotone.segments[1].region # which of the four shapes that interval took
 ```
 
 ## Design
@@ -193,6 +197,38 @@ flat. Linear on zero rates returns a ramp from +3% down to **−1%**, crossing
 zero around 1.7 years — a negative rate manufactured by the interpolation from
 data that contained none. Both figures are in the test suite, and
 `instantaneous_forward` makes them inspectable on any curve.
+
+*Monotone convex*, the scheme of Hagan and West, declines the trade-off. It
+interpolates the forward rate itself, under the constraint that it must average
+back to each interval's discrete forward — so the pillars are repriced by an
+identity rather than by luck, the forward curve is continuous across them, and
+positivity is imposed rather than hoped for. On the same two pillars its forward
+runs from **+2% at the one-year pillar to exactly 0% at the two-year pillar**,
+straight down and never below: it moves across the interval, as the data says it
+should, and stays where log-linear's flat 1% average says it can. The 0% at the
+far end is the positivity clamp doing its work — the unconstrained node forward
+there extrapolates to −0.25%.
+
+The construction is worth a sentence, because the interesting part is not the
+quadratic. Write the forward on an interval as the discrete forward plus a
+deviation `G(x)`, pinned at each end by the node forward there. Repricing both
+pillars is then exactly `∫₀¹ G = 0`, and the natural choice is the quadratic
+through both endpoints. But a quadratic with a fixed integral has no freedom
+left to stay inside its own endpoints, and for endpoint pairs far enough apart
+it overshoots — which in a rising curve is a dip and in a falling one can be a
+negative forward. The answer is to hold `G` flat over part of the interval and
+curve it over the rest, with the split point chosen to keep the integral at
+zero. Which of the four shapes applies depends on nothing but the ratio of the
+two endpoint deviations, with the regions meeting at −2 and −½, and
+`tenor.monotone.classify` is written that way rather than as the eight
+sign-and-magnitude conditions the method is usually stated with.
+
+What it costs: pillars implying a negative discrete forward are refused rather
+than interpolated. The positivity clamp bounds each node into `[0, 2·min(f)]`
+over its neighbouring discrete forwards, and that range is empty once one of
+them is negative. Those inputs contain an arbitrage — discount factors that rise
+over an interval — so the honest answer is the error rather than a confident
+number from a clamp that no longer means anything.
 
 ### Extrapolation is refused
 

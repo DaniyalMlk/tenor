@@ -26,13 +26,18 @@ They are separate conventions here rather than one with a flag.
 
 - [x] Discount factors, zero rates and forward rates, with the compounding stated
 - [x] Interpolation: linear on zero rates, log-linear on discount factors
-- [ ] Monotone convex interpolation, which keeps forwards positive
+- [x] Monotone convex interpolation, which keeps forwards positive
 - [x] Conversion between any two of discount, zero and forward without drift
 - [x] Extrapolation refused rather than silently flattened
 
-Log-linear on discount factors already guarantees positive forwards wherever the
-discount factors decrease; the remaining item is the smooth Hagan-West scheme,
-which keeps that guarantee without the piecewise-constant forwards.
+Log-linear on discount factors already guaranteed positive forwards wherever the
+discount factors decrease, at the cost of forwards that are flat inside each
+interval and jump at every pillar. The Hagan-West scheme keeps the guarantee and
+drops the cost: forwards that vary across each interval and join continuously
+across the pillars. It buys that by imposing positivity as a clamp rather than
+inheriting it, which is also its one refusal — pillars implying a negative
+discrete forward put the clamp's range out of reach and are rejected as the
+arbitrage they are.
 
 ## Phase 3 — Bootstrapping
 

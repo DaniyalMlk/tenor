@@ -451,6 +451,15 @@ def test_monotone_convex_holds_the_forward_positive_where_linear_zero_does_not()
     assert max(monotone_forwards) - min(monotone_forwards) > 1e-3
     assert monotone_forwards == sorted(monotone_forwards, reverse=True)
 
+    # The figure quoted in the README: +2% at the near pillar, straight down to
+    # exactly 0% at the far one. The zero is the positivity clamp, not the
+    # data - the unconstrained node forward there extrapolates to -0.25%.
+    assert monotone.instantaneous_forward(1.0) == pytest.approx(0.02, abs=1e-9)
+    assert monotone.instantaneous_forward(2.0) == pytest.approx(0.0, abs=1e-12)
+    for time in grid:
+        expected = 0.02 - 0.02 * (time - 1.0)
+        assert monotone.instantaneous_forward(time) == pytest.approx(expected, abs=1e-9)
+
 
 def test_monotone_convex_reprices_the_pillars_to_machine_precision() -> None:
     """Not to a tolerance: the interval shapes integrate to zero by construction."""
