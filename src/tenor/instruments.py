@@ -234,8 +234,26 @@ class Swap:
             total += accrual * curve.discount(period.payment)
         return total
 
+    @property
+    def final_payment(self) -> date:
+        """When the last cash actually moves.
+
+        Not :attr:`maturity`. A swap maturing on a weekend or a holiday has its
+        final payment rolled forward, and that rolled date is the one whose
+        discount factor the quote pins down. Using the unadjusted maturity
+        instead puts the curve's pillar a day or three before the payment it is
+        supposed to price, which shows up as a bootstrap that cannot evaluate
+        its own last instrument.
+        """
+        return self.schedule()[-1].payment
+
+    @property
+    def first_accrual(self) -> date:
+        """When the legs start accruing, rolled onto a business day."""
+        return self.schedule()[0].adjusted_start
+
     def floating_value(self, curve: DiscountCurve) -> float:
-        return curve.discount(self.effective) - curve.discount(self.maturity)
+        return curve.discount(self.first_accrual) - curve.discount(self.final_payment)
 
     def fixed_value(self, curve: DiscountCurve) -> float:
         return self.rate * self.annuity(curve)
@@ -262,16 +280,23 @@ Instrument = Deposit | Future | Swap
 
 
 def maturity_of(instrument: Instrument) -> date:
-    """The date whose discount factor an instrument pins down."""
+    """The date whose discount factor an instrument pins down.
+
+    For a swap that is its last *payment* date, not its maturity: the two
+    differ whenever maturity lands on a weekend or a holiday, and it is the
+    payment the curve has to be able to discount.
+    """
     if isinstance(instrument, Future):
         return instrument.end
+    if isinstance(instrument, Swap):
+        return instrument.final_payment
     return instrument.maturity
 
 
 def start_of(instrument: Instrument) -> date:
     """The date an instrument's own accrual begins."""
     if isinstance(instrument, Swap):
-        return instrument.effective
+        return instrument.first_accrual
     return instrument.start
 
 

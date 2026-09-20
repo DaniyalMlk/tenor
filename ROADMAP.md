@@ -86,10 +86,20 @@ the ten-year entry moves by 64% and the five-year changes sign.
 
 ## Phase 6 — Spreads and embedded options
 
-- [ ] Z-spread and I-spread over a curve
-- [ ] A short-rate lattice calibrated to reprice the curve exactly
-- [ ] American call and put exercise on the lattice
-- [ ] Option-adjusted spread, and the option cost it implies
+- [x] Z-spread and I-spread over a curve
+- [x] A short-rate lattice calibrated to reprice the curve exactly
+- [x] American call and put exercise on the lattice
+- [x] Option-adjusted spread, and the option cost it implies
+
+I-spread is kept for contrast rather than for use. A bond priced exactly on the
+curve - with no spread at all - shows an I-spread of -0.14bp at two years and
+-6.0bp at fifteen, purely because the benchmark is a single par rate at the
+maturity. Its Z-spread is zero, as it should be.
+
+The lattice steps in uniform half-years where a bond pays on actual dates, so a
+spread measured on the tree and the same spread measured on the curve differ by
+about a quarter of a basis point. That is recorded rather than tolerated
+silently; closing it would mean a tree whose steps follow the coupon dates.
 
 ## Phase 7 — Interface, documentation and continuous integration
 
