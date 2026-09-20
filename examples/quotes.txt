@@ -1,0 +1,8 @@
+# A plausible screen, as at 2021-01-05. One instrument per line.
+# Every convention is named; nothing here is defaulted.
+
+deposit  2021-07-05  0.0020  ACT_360
+swap     2023-01-05  0.0060  SEMI_ANNUAL  THIRTY_360_BOND
+swap     2026-01-05  0.0150  SEMI_ANNUAL  THIRTY_360_BOND
+swap     2031-01-05  0.0220  SEMI_ANNUAL  THIRTY_360_BOND
+swap     2041-01-07  0.0270  SEMI_ANNUAL  THIRTY_360_BOND

@@ -103,7 +103,16 @@ silently; closing it would mean a tree whose steps follow the coupon dates.
 
 ## Phase 7 — Interface, documentation and continuous integration
 
-- [ ] Command line entry point over a curve and an instrument file
-- [ ] Worked example reproducing a published figure end to end
-- [ ] README covering the conventions and the design decisions
-- [ ] Continuous integration across supported Python versions with types and lint
+- [x] Command line entry point over a curve and an instrument file
+- [x] Worked example reproducing a published figure end to end
+- [x] README covering the conventions and the design decisions
+- [x] Continuous integration across supported Python versions with types and lint
+
+The command line requires `--basis` rather than defaulting it. Conventions are
+accepted by enum name as well as by the market's spelling, because the market's
+spelling has spaces in it.
+
+The worked example exists to reproduce figures from outside this repository -
+the three ISDA thirty-day-month rules, Hull's futures convexity adjustment - and
+to exercise the identities between phases, which no single module's tests can
+see. It exits non-zero if any of them moves.

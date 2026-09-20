@@ -9,14 +9,14 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-`ROADMAP.md` says what is built and what is not. Phases 1 to 6 are done: dates,
-day counts, holiday calendars and payment schedules; discount curves,
-compounding conventions and three interpolation schemes; a bootstrapper that
-builds a curve from deposits, futures and par swaps; bond analytics — price,
-yield, duration, convexity and basis point values; curve risk — key rate
-durations, shape shifts and instrument-by-instrument risk; and spreads —
-Z-spread, a calibrated short rate lattice, American exercise and
-option-adjusted spread. A command line and a worked example are what remain.
+All seven phases in `ROADMAP.md` are built: dates, day counts, holiday
+calendars and payment schedules; discount curves, compounding conventions and
+three interpolation schemes; a bootstrapper over deposits, futures and par
+swaps; bond analytics — price, yield, duration, convexity and basis point
+values; curve risk — key rate durations, shape shifts and
+instrument-by-instrument risk; spreads — Z-spread, a calibrated short rate
+lattice, American exercise and option-adjusted spread; and a command line with
+a worked example.
 
 ## Using it
 
@@ -124,6 +124,38 @@ for one in key_rates(value, curve, buckets_from(curve, [0.5, 10])):
 for one in instrument_risk(value, built):
     one.name, one.value                           # what to trade against it
 ```
+
+## The command line
+
+```
+$ tenor curve examples/quotes.txt --reference 2021-01-05 --basis ACT_365F
+reference: 2021-01-05
+interpolation: log-linear on discount factors
+sweeps: 1
+worst_repricing_error: 5.551115123e-17
+reprices: True
+pillars:
+  date=2021-07-05  years=0.49589  discount=0.9989954546  zero=0.002026758939
+  ...
+
+$ tenor option examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+      --maturity 2031-01-05 --coupon 0.05 --volatility 0.15 \
+      --first-call 2026-01-05
+bullet: 125.5612364
+with_option: 116.7589796
+option_value: 8.802256883
+z_spread: 0.008904973855
+oas: 1.208616557e-17
+option_cost: 0.008904973855
+```
+
+`--basis` is required, not defaulted. Also `price` and `risk`; `--json` on any
+of them. Every subcommand reports the identity that goes with its numbers — the
+repricing error, the key rate sum against the total duration, whether the
+lattice reprices the curve — rather than only the numbers.
+
+`examples/worked.py` runs the whole library in one pass and exits non-zero if
+any published figure moves.
 
 ## Design
 

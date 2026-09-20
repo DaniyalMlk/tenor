@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = []
 
+[project.scripts]
+tenor = "tenor.cli:main"
+
 [project.optional-dependencies]
 # Nothing is needed to run this. Everything below is for checking the code.
 dev = ["pytest>=8", "mypy>=1.8", "ruff>=0.4"]
