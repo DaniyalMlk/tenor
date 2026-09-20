@@ -385,7 +385,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, OSError) as bad:
         print(f"{type(bad).__name__}: {bad}", file=sys.stderr)
         return 2
-    print(_report(payload, arguments.json))
+    try:
+        print(_report(payload, arguments.json))
+    except BrokenPipeError:  # pragma: no cover - needs a closed pipe to reach
+        # Piping into head closes the pipe early. Reporting that as a traceback
+        # makes a tool look broken for doing exactly what it was asked to.
+        sys.stderr.close()
+        return 0
     return 0
 
 
