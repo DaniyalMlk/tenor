@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=68"]
+# 77 is the floor for the SPDX `license` expression and `license-files` below.
+# Anything older reads `license = "MIT"` as a legacy table and fails the build.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,8 +10,44 @@ version = "0.1.0"
 description = "A fixed-income curve toolkit: day counts, discount curves, bond analytics, key rate risk and option-adjusted spread."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+# The legacy `license = { text = "MIT" }` table this replaces put the word MIT in
+# the metadata and left the LICENSE file out of the distribution entirely.
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Daniyal" }]
+keywords = [
+    "fixed-income",
+    "yield-curve",
+    "bootstrapping",
+    "bond-analytics",
+    "day-count",
+    "duration",
+    "key-rate-duration",
+    "option-adjusted-spread",
+    "quantitative-finance",
+]
+# No `License ::` classifier: it is mutually exclusive with the SPDX expression
+# above, and supplying both is an error rather than a duplication.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/DaniyalMlk/tenor"
+Source = "https://github.com/DaniyalMlk/tenor"
+Issues = "https://github.com/DaniyalMlk/tenor/issues"
 
 [project.scripts]
 tenor = "tenor.cli:main"
