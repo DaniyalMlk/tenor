@@ -116,3 +116,19 @@ The worked example exists to reproduce figures from outside this repository -
 the three ISDA thirty-day-month rules, Hull's futures convexity adjustment - and
 to exercise the identities between phases, which no single module's tests can
 see. It exits non-zero if any of them moves.
+
+## Phase 8 — Distribution
+
+- [x] `py.typed` inside the package, so the annotations reach anyone who installs it
+- [x] Distribution metadata an index can present: authors, keywords, classifiers,
+      project URLs, and the licence as an SPDX expression carrying the LICENSE text
+      into the artefact, which the legacy licence table did not
+- [x] `tenor --version`, asserted against both the installed metadata and the version
+      declared in `pyproject.toml`
+- [x] A release driven by a version tag, publishing with the index's trusted
+      publishing flow, so no upload credential exists in the repository — and
+      refusing to publish when the tag and the declared version disagree
+- [x] The sdist and the wheel each installed into a clean environment and made to
+      bootstrap the bundled quote screen, on pull requests as well as on a tag
+- [ ] A first release on the index, which waits on the publisher being registered
+      there for this project
