@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
+from . import __version__
 from .bond import Bond
 from .bootstrap import Bootstrapped, bootstrap
 from .curve import Interpolation
@@ -308,6 +309,9 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="tenor", description="Build a curve from quotes and measure things on it."
     )
+    # Worth having for its own sake, and it doubles as the cheapest possible smoke
+    # test of an install: it imports the package and prints something.
+    root.add_argument("--version", action="version", version=f"tenor {__version__}")
     root.add_argument("--json", action="store_true", help="machine readable output")
     subcommands = root.add_subparsers(dest="command", required=True)
 
