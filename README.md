@@ -24,6 +24,13 @@ a worked example.
 pip install tenor
 ```
 
+> **Not on the package index yet.** The `pip install` line above is what it
+> will be; until the first release lands, install from source:
+>
+> ```bash
+> pip install "git+https://github.com/DaniyalMlk/tenor.git"
+> ```
+
 Python 3.10 or newer. The library imports only the standard library, so there is
 nothing else to resolve and nothing to compile.
 
