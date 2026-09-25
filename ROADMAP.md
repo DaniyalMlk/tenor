@@ -132,3 +132,39 @@ see. It exits non-zero if any of them moves.
       bootstrap the bundled quote screen, on pull requests as well as on a tag
 - [ ] A first release on the index, which waits on the publisher being registered
       there for this project
+
+## Phase 8 — Holding-period return
+
+The library could price a bond and measure its risk, and could not answer the
+question a position is held for: if nothing happens, what does this earn?
+
+- [x] A forward curve — today's curve seen from a future date
+- [x] A rolled curve — the same zero rate at each tenor, reference date moved,
+      which is a different object and the one carry-and-roll-down needs
+- [x] Coupons inside the window, reinvested at the curve's own forward rates
+- [x] The decomposition, with carry asserted equal to the financing cost rather
+      than described as roughly equal to it
+- [x] Both market meanings of "carry" reported, each named for what it is
+- [x] A sequence of lengthening horizons, stopping at maturity rather than
+      raising
+- [x] A `horizon` command over a quote screen and a bond
+
+"Nothing happens" means two different things and the gap between them is the
+entire expected excess return. Under the arbitrage-free reading the curve
+evolves to its own forwards and the bond earns its funding cost exactly — an
+identity, measured here at 2e-15 per 100 across coupons from 0% to 9%, three
+curve shapes and every interpolation. Under the trader's reading the zero rate
+at each tenor is unchanged, the bond ages into a different point on it, and the
+difference is roll-down.
+
+On the bundled screen a 3% 2031 held for a year returns 279bp: 50bp financing,
+249bp roll-down.
+
+The two curves must not be confused. Building the forward curve and using it as
+the rolled curve makes roll-down come out as exactly zero, which is plausible
+enough to survive review and answers a different question. On a flat curve they
+genuinely coincide, which is why roll-down is zero there and nowhere else.
+
+Reporting only income-minus-financing would have been the conventional choice
+and it ranks positions backwards: a 9% bond shows +4.83 against a zero-coupon
+bond's -2.00, and the zero-coupon bond earns 27bp more over the year.

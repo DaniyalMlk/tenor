@@ -163,10 +163,23 @@ option_value: 8.802256883
 z_spread: 0.008904973855
 oas: 1.208616557e-17
 option_cost: 0.008904973855
+
+$ tenor horizon examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+      --maturity 2031-01-05 --coupon 0.03 --horizon 2022-01-05
+start_price: 107.2969819
+forward_price: 104.7956417
+rolled_price: 107.2879716
+coupon_income: 3.005534685
+forward_price_change: -2.501340175
+financing_cost: 0.5041945095
+carry: 0.5041945095
+roll_down: 2.49232992
+total_return_bps: 279.2738787
+arbitrage_free: True
 ```
 
-`--basis` is required, not defaulted. Also `price` and `risk`; `--json` on any
-of them. Every subcommand reports the identity that goes with its numbers — the
+`--basis` is required, not defaulted. Also `price`, `risk` and `horizon`;
+`--json` on any of them. Every subcommand reports the identity that goes with its numbers — the
 repricing error, the key rate sum against the total duration, whether the
 lattice reprices the curve — rather than only the numbers.
 
@@ -174,6 +187,64 @@ lattice reprices the curve — rather than only the numbers.
 any published figure moves.
 
 ## Design
+
+### Carry earns nothing; roll-down is the whole of it
+
+A bond held to a horizon on a curve that evolves to its own forwards earns its
+funding cost and nothing else. Coupon income and the pull of the price towards
+its forward offset the financing exactly. This is an identity, not an
+approximation, and `tenor.horizon` asserts it to machine precision — measured
+at 2e-15 per 100 of notional across coupons from 0% to 9%, three curve shapes,
+every interpolation scheme, and a year of settlement dates.
+
+So the expected excess return of a bond position is not carry. It is the curve
+*failing* to evolve to its forwards: the bond ages, its remaining maturity
+shortens, and on an unchanged spot curve it is repriced off a lower point. That
+is roll-down, and it is all of it.
+
+On the bundled quote screen — a curve running from 20bp to 220bp — a 3% 2031
+bond held for a year returns **279 basis points, of which 50 is the financing
+cost and 249 is roll-down.**
+
+This needs two curves and they are different objects:
+
+| | what it is | what it is for |
+|---|---|---|
+| `forward_curve` | every discount factor divided by the horizon's | the no-arbitrage half |
+| `rolled_curve` | the same zero rate at each *tenor*, reference moved | the trader's unchanged curve |
+
+Building the first and calling it the second is the natural mistake, and it
+makes roll-down come out as exactly zero every time — which looks plausible and
+is the answer to a different question. On a flat curve the two coincide, which
+is precisely why roll-down is zero there.
+
+The roll is applied in days, not by adding a calendar period. A pillar 1826
+days out stays 1826 days out; adding months instead moves pillars by unequal
+amounts and quietly changes the curve's shape, which is the one thing this must
+not do.
+
+**Why both definitions of "carry" are reported.** The market uses the word for
+at least two quantities. Here `carry` is coupon income plus the forward price
+change — the no-arbitrage total, identically the financing cost.
+`income_less_financing` is the other one. They are not interchangeable and the
+second can point the wrong way:
+
+| | income − financing | actual return |
+|---|---|---|
+| 9% of 2031 | **+4.83** | 443.6 bp |
+| 0% of 2031 | **−2.00** | **470.7 bp** |
+
+Nearly seven points of apparent carry separate the two bonds, the zero-coupon
+one looks far worse on it, and the zero-coupon one actually earns *more*. The
+high coupon is paid for by a price falling towards par by the same amount. A
+decomposition whose leading term ranks two positions backwards is worse than no
+decomposition, which is why both are reported and neither is called "carry"
+without saying which.
+
+Coupons paid inside the window are reinvested at the curve's own forward rates.
+That is the only assumption under which the identity holds; reinvesting at a
+chosen rate would make carry differ from the financing cost by the size of the
+view, which is a fact about the view and not about the bond.
 
 ### "30/360" names three different rules
 

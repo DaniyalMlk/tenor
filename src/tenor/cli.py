@@ -31,6 +31,7 @@ from .bond import Bond
 from .bootstrap import Bootstrapped, bootstrap
 from .curve import Interpolation
 from .daycount import Basis
+from .horizon import horizon_return
 from .instruments import Deposit, Future, Instrument, Swap
 from .lattice import (
     Exercise,
@@ -211,6 +212,43 @@ def run_price(arguments: argparse.Namespace) -> dict[str, object]:
     return result
 
 
+def run_horizon(arguments: argparse.Namespace) -> dict[str, object]:
+    """Carry and roll-down over a holding period.
+
+    Reports both meanings of "carry" side by side because the market uses
+    both, and a decomposition whose terms are ambiguous is worse than none.
+    """
+    built = build(arguments)
+    reference = built.curve.reference
+    bond = _bond(arguments, reference)
+    horizon = date.fromisoformat(arguments.horizon)
+    found = horizon_return(bond, built.curve, reference, horizon)
+    return {
+        "bond": bond.name,
+        "settlement": reference.isoformat(),
+        "horizon": horizon.isoformat(),
+        "period_years": found.period,
+        "start_price": found.start_price,
+        "forward_price": found.forward_price,
+        "rolled_price": found.rolled_price,
+        "coupons": [
+            {"day": one.day.isoformat(), "amount": one.amount, "at_horizon": one.value_at_horizon}
+            for one in found.coupons
+        ],
+        "coupon_income": found.coupon_income,
+        "forward_price_change": found.forward_price_change,
+        "financing_rate": found.financing_rate,
+        "financing_cost": found.financing_cost,
+        "carry": found.carry,
+        "income_less_financing": found.income_less_financing,
+        "roll_down": found.roll_down,
+        "total_return": found.total_return,
+        "total_return_bps": found.total_return_bps,
+        "excess_over_financing": found.excess_over_financing,
+        "arbitrage_free": found.is_arbitrage_free(),
+    }
+
+
 def run_risk(arguments: argparse.Namespace) -> dict[str, object]:
     built = build(arguments)
     reference = built.curve.reference
@@ -368,6 +406,21 @@ def parser() -> argparse.ArgumentParser:
         help="key rate buckets, in years",
     )
     risk.set_defaults(run=run_risk)
+
+    ahead = subcommands.add_parser(
+        "horizon",
+        help="carry and roll-down over a holding period",
+        description=(
+            "Splits a holding-period return into the part that is free and the "
+            "part that is not. Carry — coupon income plus the forward price "
+            "change — is identically the financing cost on an arbitrage-free "
+            "curve, so the whole of the expected excess return is roll-down."
+        ),
+    )
+    shared(ahead)
+    bond_arguments(ahead)
+    ahead.add_argument("--horizon", required=True, help="end of the holding period, ISO")
+    ahead.set_defaults(run=run_horizon)
 
     option = subcommands.add_parser("option", help="value an embedded option")
     shared(option)

@@ -25,6 +25,7 @@ from tenor.bond import Bond
 from tenor.bootstrap import bootstrap
 from tenor.cli import BadInput, main, parse_quotes
 from tenor.daycount import Basis
+from tenor.horizon import horizon_return
 from tenor.instruments import Deposit, Future, Swap
 
 REFERENCE = date(2021, 1, 5)
@@ -241,3 +242,69 @@ def test_the_plain_output_is_readable(
     assert "reprices: True" in out
     assert "pillars:" in out
     assert "date=2021-07-05" in out
+
+
+def test_the_horizon_command_reports_the_carry_identity(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "--json", "horizon", *shared(quote_file),
+        "--maturity", "2031-01-05", "--coupon", "0.03",
+        "--horizon", "2022-01-05",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["arbitrage_free"] is True
+    assert payload["carry"] == pytest.approx(payload["financing_cost"], abs=1e-11)
+    assert payload["total_return"] == pytest.approx(
+        payload["carry"] + payload["roll_down"], abs=1e-11
+    )
+    assert payload["excess_over_financing"] == pytest.approx(payload["roll_down"], abs=1e-11)
+
+
+def test_the_horizon_command_shows_where_the_return_comes_from(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On this screen the curve runs from 20bp to 220bp, so a ten-year bond
+    held for a year earns far more from rolling down it than from holding it."""
+    arguments = [
+        "--json", "horizon", *shared(quote_file),
+        "--maturity", "2031-01-05", "--coupon", "0.03",
+        "--horizon", "2022-01-05",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_return_bps"] > 200.0
+    assert payload["roll_down"] > 4.0 * payload["financing_cost"]
+    assert len(payload["coupons"]) == 2
+
+
+def test_the_horizon_command_agrees_with_the_library(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "--json", "horizon", *shared(quote_file),
+        "--maturity", "2031-01-05", "--coupon", "0.05",
+        "--horizon", "2023-01-05",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    curve = bootstrap(
+        REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F
+    ).curve
+    bond = Bond(REFERENCE, date(2031, 1, 5), 0.05)
+    expected = horizon_return(bond, curve, REFERENCE, date(2023, 1, 5))
+    assert payload["roll_down"] == pytest.approx(expected.roll_down)
+    assert payload["start_price"] == pytest.approx(expected.start_price)
+
+
+def test_a_horizon_past_maturity_is_reported_rather_than_raised(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "horizon", *shared(quote_file),
+        "--maturity", "2031-01-05", "--coupon", "0.03",
+        "--horizon", "2032-01-05",
+    ]
+    assert main(arguments) == 2
+    assert "no price at the" in capsys.readouterr().err
