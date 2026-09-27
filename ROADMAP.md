@@ -168,3 +168,68 @@ genuinely coincide, which is why roll-down is zero there and nowhere else.
 Reporting only income-minus-financing would have been the conventional choice
 and it ranks positions backwards: a 9% bond shows +4.83 against a zero-coupon
 bond's -2.00, and the zero-coupon bond earns 27bp more over the year.
+
+## Phase 9 — Floating rate notes
+
+The library priced fixed-coupon bullets, solved yields and three kinds of spread,
+and measured key rate and shape risk. It could not price the one instrument whose
+whole behaviour is a statement about the curve, and the one place where rate risk
+and spread risk are not approximately the same number.
+
+- [x] Projected coupons, each period's index rate taken from the discount factors
+      against the coupon's own accrual fraction
+- [x] The current period's coupon taken from a supplied fixing rather than
+      projected, with the approximation named and measured where it is projected
+- [x] A price off the curve, clean and dirty, and accrued interest that refuses
+      rather than guess a fixing
+- [x] A discount margin solved against the observed price, applied period by
+      period to the projected forwards rather than added to a zero rate
+- [x] Spread duration, rate duration and the margin value of a basis point,
+      reported separately
+- [x] A command line report printing both durations, with the coupon projection
+      behind a flag
+- [x] The mypy version pin removed, which was making the checker read installed
+      stubs as 3.11 and fail inside numpy's on a 3.12 interpreter
+
+The identity everything here rests on: with the discount margin equal to the
+quoted margin, each coupon is exactly its own discount denominator minus one, the
+sum telescopes, and the price is exactly par — for any curve of any shape at any
+level on any day count basis. Asserted to 5e-13 across four curve shapes, four
+bases and three frequencies.
+
+Measuring it showed the consequence is stronger than the usual statement of it.
+Collapsing the telescoping sum leaves the whole price equal to
+`(1 + (fixing + m) tau_1) / (1 + (fixing + m) tau_remaining)`, which contains no
+curve. So rate duration is exactly zero on *any* settlement date once the current
+fixing is known, not only on a reset date. A floater does not have a little rate
+risk because its coupon resets soon; at par it has none.
+
+What it has away from par is the rate sensitivity of the leftover annuity when the
+discount margin differs from the quoted one — linear in that difference and
+changing sign with the side of par. Against a quoted 75bp on the five-year note in
+the tests: +0.061 years at a 25bp margin, 0.000 at 75bp, −0.061 at 125bp, −0.250
+at 275bp. A floater trading cheap to its quoted margin gains when rates rise.
+Projecting the current fixing instead of knowing it adds −0.057 years at par three
+weeks into a quarterly period, and costs 2.9bp of price when the real fixing is
+50bp away from the projection.
+
+Spread duration is 1.014 times the modified duration of a fixed bond of the same
+maturity at three years, 1.005 at five and 0.974 at ten.
+
+**The par identity does not validate the projection**, and that is worth recording
+because it is the obvious thing to rely on. The telescoping needs the coupon and
+the discount denominator to use the same rate over the same fraction; it does not
+need that rate to be right. A note projected with its index scaled by an arbitrary
+factor prices at exactly par, so there is a test asserting that rather than a
+false sense that par covers it. The projection convention is measured separately:
+an ACT/360 note on an ACT/365F curve reads 20.72bp against 21.01bp on its first
+period, worth half a basis point of price at a wide margin and 0.05bp of implied
+margin.
+
+Two defects found by the tests and fixed. A settlement date inside a period that
+began before the curve's reference date raised `OffCurve` from inside the curve;
+it is not an approximation but an impossibility — there is no discount factor at
+the reset to take a forward from — and it now refuses with the fixing named. And a
+settlement date past maturity left no flows, so the sum over an empty sequence
+priced a matured note at 0.0 and every risk number built on it would have divided
+by it.
