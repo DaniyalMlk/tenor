@@ -264,6 +264,19 @@ class FloatingNote:
         accrual = year_fraction(period.start, period.end, self.basis)
         if accrual <= 0.0:  # pragma: no cover - schedules do not emit empty periods
             raise BadNote(f"{self.name} has a coupon period of zero length")
+        if period.adjusted_start < curve.reference:
+            # Settlement inside a period that began before the curve starts. The
+            # projection is not merely approximate here, it does not exist: there
+            # is no discount factor at the reset date to take a forward from. This
+            # is the ordinary case on any settlement date that is not a reset
+            # date, so the message names the fixing rather than the curve.
+            raise BadNote(
+                f"{self.name}: the coupon period beginning "
+                f"{period.adjusted_start.isoformat()} started before the curve's "
+                f"reference date {curve.reference.isoformat()}, so its index rate "
+                "cannot be projected at all. Pass `current_fixing` with the rate "
+                "that was set on that date."
+            )
         growth = curve.discount(period.adjusted_start) / curve.discount(
             period.adjusted_end
         )
@@ -317,6 +330,10 @@ class FloatingNote:
         flow due exactly on the settlement date belongs to the seller and is
         excluded, which is the same rule :meth:`current_period` uses.
         """
+        # Called for the range check and nothing else. Without it a settlement
+        # date past maturity leaves no periods, the sum over an empty sequence is
+        # zero, and a matured note prices at zero rather than being refused.
+        self.current_period(settlement)
         remaining = [one for one in self.schedule() if one.end > settlement]
         factor = 1.0
         coupons: list[FloatingCoupon] = []
