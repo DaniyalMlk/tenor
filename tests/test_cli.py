@@ -25,8 +25,10 @@ from tenor.bond import Bond
 from tenor.bootstrap import bootstrap
 from tenor.cli import BadInput, main, parse_quotes
 from tenor.daycount import Basis
+from tenor.floating import FloatingNote
 from tenor.horizon import horizon_return
 from tenor.instruments import Deposit, Future, Swap
+from tenor.schedule import Frequency
 
 REFERENCE = date(2021, 1, 5)
 QUOTES = """
@@ -308,3 +310,110 @@ def test_a_horizon_past_maturity_is_reported_rather_than_raised(
     ]
     assert main(arguments) == 2
     assert "no price at the" in capsys.readouterr().err
+
+
+# -- the floating rate note ---------------------------------------------------
+
+
+def test_the_floating_command_reports_par_and_a_rate_duration_of_zero(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The two numbers a floater report exists to put next to each other.
+
+    At the quoted margin the note is worth exactly par and its rate duration is
+    zero to floating point, while its spread duration is most of its maturity.
+    A report that gave a single "duration" would be giving the wrong one.
+    """
+    arguments = [
+        "--json", "floating", *shared(quote_file),
+        "--maturity", "2026-01-05", "--quoted-margin", "0.0075",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["on_reset_date"] is True
+    assert payload["dirty"] == pytest.approx(100.0, abs=5e-13)
+    assert payload["clean"] == pytest.approx(100.0, abs=5e-13)
+    assert abs(payload["rate_duration"]) < 1e-9
+    assert payload["spread_duration"] > 4.0
+    assert payload["discount_margin"] == pytest.approx(0.0075, abs=1e-12)
+    assert payload["coupon_count"] == 20
+    assert json.dumps(payload, allow_nan=False)
+
+
+def test_the_floating_command_solves_a_margin_against_a_quote(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """And the margin it reports has to reprice the quote it was given."""
+    arguments = [
+        "--json", "floating", *shared(quote_file),
+        "--maturity", "2026-01-05", "--quoted-margin", "0.0075",
+        "--quote", "98.5", "--fixing", "0.004",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["quoted_clean"] == pytest.approx(98.5)
+    assert payload["clean"] == pytest.approx(98.5, abs=1e-9)
+    assert payload["discount_margin"] > 0.0075
+    # Below par means a margin wider than the coupon spread, which means the
+    # leftover annuity is negative and rate duration goes with it.
+    assert payload["rate_duration"] < 0.0
+    assert payload["current_fixing_projected"] is False
+
+
+def test_the_floating_command_agrees_with_the_library(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "--json", "floating", *shared(quote_file),
+        "--maturity", "2031-01-05", "--quoted-margin", "0.005",
+        "--margin", "0.012", "--coupons",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    curve = bootstrap(
+        REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F
+    ).curve
+    note = FloatingNote(
+        REFERENCE, date(2031, 1, 5), 0.005, Frequency.QUARTERLY, Basis.ACT_360
+    )
+    assert payload["dirty"] == pytest.approx(
+        note.dirty_price(curve, REFERENCE, margin=0.012)
+    )
+    assert payload["spread_duration"] == pytest.approx(
+        note.spread_duration(curve, REFERENCE, margin=0.012)
+    )
+    assert len(payload["coupons"]) == payload["coupon_count"]
+    assert payload["coupons"][-1]["redemption"] == pytest.approx(100.0)
+    assert all(one["projected"] for one in payload["coupons"])
+
+
+def test_the_coupon_listing_is_off_unless_asked_for(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Twenty rows of projection is a report about the wrong thing by default."""
+    arguments = [
+        "--json", "floating", *shared(quote_file),
+        "--maturity", "2026-01-05", "--quoted-margin", "0.0075",
+    ]
+    assert main(arguments) == 0
+    assert "coupons" not in json.loads(capsys.readouterr().out)
+
+
+def test_a_floater_settling_mid_period_without_a_fixing_is_reported(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The curve does not reach back to the last reset, so it cannot be projected.
+
+    Reported as a message rather than raised through the curve, because the thing
+    the caller has to do about it is find a fixing. The note here was issued two
+    years before the reference date on a January/April/July/October grid, so the
+    reference falls inside a period that began the previous October — which is the
+    ordinary case, not a contrived one.
+    """
+    arguments = [
+        "floating", *shared(quote_file),
+        "--maturity", "2026-01-07", "--quoted-margin", "0.0075",
+        "--issued", "2019-01-07",
+    ]
+    assert main(arguments) == 2
+    assert "started before the curve's reference date" in capsys.readouterr().err
