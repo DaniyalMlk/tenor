@@ -23,6 +23,12 @@ from .daycount import (
     is_leap,
     year_fraction,
 )
+from .floating import (
+    BadMargin,
+    BadNote,
+    FloatingCoupon,
+    FloatingNote,
+)
 from .horizon import (
     BadHorizon,
     CouponReceipt,
@@ -114,6 +120,8 @@ __all__ = [
     "BadHorizon",
     "BadInstrument",
     "BadLattice",
+    "BadMargin",
+    "BadNote",
     "BadPeriod",
     "BadRate",
     "BadRisk",
@@ -131,6 +139,8 @@ __all__ = [
     "Deposit",
     "DiscountCurve",
     "Exercise",
+    "FloatingCoupon",
+    "FloatingNote",
     "Frequency",
     "Future",
     "HorizonReturn",

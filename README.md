@@ -141,6 +141,20 @@ for one in instrument_risk(value, built):
     one.name, one.value                           # what to trade against it
 ```
 
+```python
+from tenor import FloatingNote
+
+note = FloatingNote(
+    date(2022, 1, 17), date(2029, 1, 17), quoted_margin=0.0075,
+    frequency=Frequency.QUARTERLY, basis=Basis.ACT_360,
+)
+
+note.dirty_price(curve, date(2024, 1, 17), margin=0.0075)   # exactly 100.0
+note.rate_duration(curve, date(2024, 1, 17), margin=0.0075) # exactly 0.0
+note.spread_duration(curve, date(2024, 1, 17), margin=0.0075)      # 4.77 years
+note.discount_margin(curve, 99.0, date(2024, 1, 17)).value         # 0.009608
+```
+
 ## The command line
 
 ```
@@ -176,9 +190,22 @@ carry: 0.5041945095
 roll_down: 2.49232992
 total_return_bps: 279.2738787
 arbitrage_free: True
+
+$ tenor floating examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+      --maturity 2026-01-05 --quoted-margin 0.0075
+note: index + 75.0bp of 2026-01-05
+on_reset_date: True
+discount_margin: 0.0075
+dirty: 100
+clean: 100
+spread_duration: 4.827613483
+rate_duration: -7.105427358e-13
+margin_value_of_a_basis_point: 0.0482635851
+coupon_count: 20
 ```
 
-`--basis` is required, not defaulted. Also `price`, `risk` and `horizon`;
+`--basis` is required, not defaulted. Also `price`, `risk`, `horizon` and
+`floating`;
 `--json` on any of them. Every subcommand reports the identity that goes with its numbers — the
 repricing error, the key rate sum against the total duration, whether the
 lattice reprices the curve — rather than only the numbers.
@@ -187,6 +214,75 @@ lattice reprices the curve — rather than only the numbers.
 any published figure moves.
 
 ## Design
+
+### A floater at its quoted margin has no rate risk at all
+
+Not a little, because its coupon resets soon. None. The identity is this: with the
+discount margin equal to the quoted margin, each coupon is exactly its own
+discount denominator minus one, so the sum telescopes and the price is exactly par
+for any curve of any shape at any level on any day count basis. That is asserted
+in the tests to 5e-13 across four curve shapes, four bases and three frequencies,
+not to a basis point.
+
+Measuring it showed the consequence is stronger than the textbook statement.
+Substituting the telescoping sum for the periods after the current one collapses
+the whole price to
+
+    (1 + (fixing + m) tau_1) / (1 + (fixing + m) tau_remaining)
+
+in which no curve appears at all. So the rate duration is exactly zero on *any*
+settlement date, not only on a reset date, provided the current period's fixing is
+known.
+
+What a floater has away from par is the rate sensitivity of the annuity left over
+when the discount margin differs from the quoted one. It is linear in that
+difference and it changes sign with the side of par. On the five-year quarterly
+note in the tests, against a quoted 75bp:
+
+| discount margin | price | rate duration |
+|---|---|---|
+| 25bp | 102.42 | **+0.061** years |
+| 75bp | 100.00 | 0.000 |
+| 125bp | 97.65 | −0.061 |
+| 275bp | 90.94 | −0.250 |
+
+A floater trading cheap to its quoted margin *gains* when rates rise, because the
+negative annuity it is carrying gets discounted harder. Not having the current
+fixing adds a separate −0.057 years at par three weeks into a quarterly period,
+which is the cost of a missing fixings history stated as risk rather than as an
+apology.
+
+Spread duration is the one that survives, and it is a whole-life number because
+the margin is discounted across every remaining period: 1.014 times the modified
+duration of a fixed bond of the same maturity at three years, 1.005 at five and
+0.974 at ten. Both are reported, and the command line prints both, because
+reporting one as "the duration" would be reporting the wrong one.
+
+Two conventions are settled rather than left implicit. The projected index rate is
+backed out of the discount factors against **the coupon's own accrual fraction**,
+not taken from `DiscountCurve.forward_rate` — the curve's forward is a simple rate
+over the curve's year fraction and the coupon does not accrue over that one. On an
+ACT/360 note over an ACT/365F curve the two differ by the ratio of the bases,
+20.72bp against 21.01bp on the first period of the test note; the price effect is
+half a basis point at a wide margin and 0.05bp on the implied discount margin,
+which is the honest size of it. And the discount margin is applied to the
+projected forward period by period rather than added to a zero rate, because
+adding a constant to the zero curve is a Z-spread and that is a different number.
+
+**The par identity does not check either of those.** The telescoping needs only
+that the coupon and the discount denominator use the *same* rate over the *same*
+fraction; it does not care whether that rate is right. A note projected with its
+index scaled by an arbitrary factor still prices at exactly par, and there is a
+test asserting that so nobody relies on par to catch a projection error.
+
+Two things a floater cannot do, both refusals rather than plausible numbers.
+Accrued interest needs the current fixing, which is not on any curve — returning
+the margin's accrual alone would be a number and would be wrong by the whole of
+the index, about 85% of it on a note paying 4% over 75bp. And a settlement date
+inside a period that began before the curve's reference date cannot be projected
+at all, because there is no discount factor at the reset to take a forward from;
+that is the ordinary case on any date that is not a reset date, so the message
+names the fixing rather than the curve.
 
 ### Carry earns nothing; roll-down is the whole of it
 

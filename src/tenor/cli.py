@@ -31,6 +31,7 @@ from .bond import Bond
 from .bootstrap import Bootstrapped, bootstrap
 from .curve import Interpolation
 from .daycount import Basis
+from .floating import FloatingNote
 from .horizon import horizon_return
 from .instruments import Deposit, Future, Instrument, Swap
 from .lattice import (
@@ -157,6 +158,16 @@ def _bond(arguments: argparse.Namespace, reference: date) -> Bond:
     )
 
 
+def _note(arguments: argparse.Namespace, reference: date) -> FloatingNote:
+    return FloatingNote(
+        date.fromisoformat(arguments.issued) if arguments.issued else reference,
+        date.fromisoformat(arguments.maturity),
+        arguments.quoted_margin,
+        Frequency[arguments.frequency.upper()],
+        _basis(arguments.note_basis),
+    )
+
+
 # -- the subcommands ----------------------------------------------------------
 
 
@@ -209,6 +220,71 @@ def run_price(arguments: argparse.Namespace) -> dict[str, object]:
         result["quoted_clean"] = arguments.quote
         result["z_spread"] = spread.value
         result["i_spread"] = i_spread(bond, arguments.quote, built.curve, reference)
+    return result
+
+
+def run_floating(arguments: argparse.Namespace) -> dict[str, object]:
+    """Price a floating rate note and report both of its durations.
+
+    Both, rather than one described as "the duration", because for this
+    instrument they differ by two orders of magnitude and at the quoted margin
+    the rate one is zero. A report giving a single number would be giving the
+    wrong one whichever it chose.
+    """
+    built = build(arguments)
+    reference = built.curve.reference
+    note = _note(arguments, reference)
+    fixing: float | None = arguments.fixing
+    margin = arguments.margin if arguments.margin is not None else note.quoted_margin
+    if arguments.quote is not None:
+        solved = note.discount_margin(
+            built.curve, arguments.quote, reference, current_fixing=fixing
+        )
+        margin = solved.value
+    dirty = note.dirty_price(
+        built.curve, reference, margin=margin, current_fixing=fixing
+    )
+    accrued = note.accrued(reference, curve=built.curve, current_fixing=fixing)
+    coupons = note.coupons(
+        built.curve, reference, margin=margin, current_fixing=fixing
+    )
+    result: dict[str, object] = {
+        "note": note.name,
+        "settlement": reference.isoformat(),
+        "on_reset_date": note.is_reset_date(reference),
+        "quoted_margin": note.quoted_margin,
+        "discount_margin": margin,
+        "dirty": dirty,
+        "accrued": accrued,
+        "clean": dirty - accrued,
+        "spread_duration": note.spread_duration(
+            built.curve, reference, margin=margin, current_fixing=fixing
+        ),
+        "rate_duration": note.rate_duration(
+            built.curve, reference, margin=margin, current_fixing=fixing
+        ),
+        "margin_value_of_a_basis_point": note.margin_value_of_a_basis_point(
+            built.curve, reference, margin=margin, current_fixing=fixing
+        ),
+        "current_fixing_projected": coupons[0].projected,
+        "coupon_count": len(coupons),
+    }
+    if arguments.coupons:
+        result["coupons"] = [
+            {
+                "payment": one.payment.isoformat(),
+                "accrual": one.accrual,
+                "index_rate": one.index_rate,
+                "projected": one.projected,
+                "coupon": one.coupon,
+                "redemption": one.redemption,
+                "discount": one.discount,
+                "present_value": one.present_value,
+            }
+            for one in coupons
+        ]
+    if arguments.quote is not None:
+        result["quoted_clean"] = arguments.quote
     return result
 
 
@@ -421,6 +497,63 @@ def parser() -> argparse.ArgumentParser:
     bond_arguments(ahead)
     ahead.add_argument("--horizon", required=True, help="end of the holding period, ISO")
     ahead.set_defaults(run=run_horizon)
+
+    floating = subcommands.add_parser(
+        "floating",
+        help="price a floating rate note and report both of its durations",
+        description=(
+            "A floater at its quoted margin is worth exactly par on any curve, and "
+            "its rate duration is exactly zero. What it has instead is spread "
+            "duration, over its whole life. Both are reported because reporting "
+            "one as 'the duration' would report the wrong one."
+        ),
+    )
+    shared(floating)
+    floating.add_argument("--maturity", required=True, help="the note's maturity, ISO")
+    floating.add_argument(
+        "--quoted-margin",
+        required=True,
+        type=float,
+        help="the spread over the index the note pays, as 0.0075 for 75bp",
+    )
+    floating.add_argument(
+        "--issued",
+        default=None,
+        help="the note's original effective date, ISO. Defaults to the reference "
+        "date, which makes settlement a reset date.",
+    )
+    floating.add_argument(
+        "--frequency", default="QUARTERLY", choices=[one.name for one in Frequency]
+    )
+    floating.add_argument(
+        "--note-basis", default=Basis.ACT_360.name, choices=[one.name for one in Basis]
+    )
+    floating.add_argument(
+        "--margin",
+        type=float,
+        default=None,
+        help="the discount margin to price at. Defaults to the quoted margin, "
+        "which prices the note at par.",
+    )
+    floating.add_argument(
+        "--quote",
+        type=float,
+        help="a clean price to solve the discount margin against instead",
+    )
+    floating.add_argument(
+        "--fixing",
+        type=float,
+        default=None,
+        help="the index rate set for the current period. Required in practice on "
+        "any settlement date that is not a reset date, because the curve does not "
+        "reach back to it.",
+    )
+    floating.add_argument(
+        "--coupons",
+        action="store_true",
+        help="list every projected coupon with the rate and discount behind it",
+    )
+    floating.set_defaults(run=run_floating)
 
     option = subcommands.add_parser("option", help="value an embedded option")
     shared(option)
