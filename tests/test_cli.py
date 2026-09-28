@@ -23,10 +23,11 @@ import pytest
 
 from tenor.bond import Bond
 from tenor.bootstrap import bootstrap
-from tenor.cli import BadInput, main, parse_quotes
+from tenor.cli import BadInput, main, parse_index, parse_quotes
 from tenor.daycount import Basis
 from tenor.floating import FloatingNote
 from tenor.horizon import horizon_return
+from tenor.inflation import LinkedBond
 from tenor.instruments import Deposit, Future, Swap
 from tenor.schedule import Frequency
 
@@ -417,3 +418,223 @@ def test_a_floater_settling_mid_period_without_a_fixing_is_reported(
     ]
     assert main(arguments) == 2
     assert "started before the curve's reference date" in capsys.readouterr().err
+
+
+# -- the linker subcommand ----------------------------------------------------
+
+
+def index_text(*, months: int = 44, annual: float = 0.02) -> str:
+    lines = ["# a published index series", ""]
+    level = 100.0
+    for k in range(months):
+        year, month = 2018 + k // 12, k % 12 + 1
+        lines.append(f"{year}-{month:02d}  {level:.6f}")
+        level *= (1.0 + annual) ** (1.0 / 12.0)
+    return "\n".join(lines) + "\n"
+
+
+@pytest.fixture
+def index_file(tmp_path: Path) -> str:
+    path = tmp_path / "index.txt"
+    path.write_text(index_text())
+    return str(path)
+
+
+def linker_argv(quote_file: str, index_file: str, *extra: str) -> list[str]:
+    return [
+        "linker",
+        quote_file,
+        "--reference",
+        REFERENCE.isoformat(),
+        "--basis",
+        "ACT_365F",
+        "--index",
+        index_file,
+        "--maturity",
+        "2029-01-05",
+        "--coupon",
+        "0.015",
+        "--base-index",
+        "100.5",
+        "--issued",
+        "2019-01-05",
+        "--projection",
+        "0.02",
+        *extra,
+    ]
+
+
+def test_the_linker_reports_both_spaces(
+    quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(["--json", *linker_argv(quote_file, index_file, "--real-yield", "0.005")])
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["index_ratio"] > 1.0
+    assert payload["real_yield"] == 0.005
+    # The invoice is the real dirty price times the ratio, so it exceeds the real
+    # clean price by both accrued and the accretion.
+    assert payload["settlement_amount"] > payload["real_clean"]
+    assert payload["settlement_amount"] == pytest.approx(
+        (payload["real_clean"] + payload["real_accrued"]) * payload["index_ratio"]
+    )
+    assert payload["real_modified_duration"] > 0.0
+    assert payload["deflation_floor_binds"] is False
+
+
+def test_the_linker_solves_a_real_yield_from_a_real_price(
+    quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(["--json", *linker_argv(quote_file, index_file, "--real-quote", "99.25")])
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["real_clean"] == pytest.approx(99.25)
+    bond = LinkedBond(
+        date(2019, 1, 5),
+        date(2029, 1, 5),
+        0.015,
+        100.5,
+        Frequency.SEMI_ANNUAL,
+        Basis.ACT_ACT_ISDA,
+    )
+    assert payload["real_yield"] == pytest.approx(
+        bond.real_yield_from_clean(99.25, REFERENCE).value
+    )
+
+
+def test_the_linker_reports_both_breakeven_forms(
+    quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = linker_argv(
+        quote_file,
+        index_file,
+        "--real-yield",
+        "0.005",
+        "--nominal-yield",
+        "0.025",
+    )
+    assert main(["--json", *argv]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["breakeven_quoted"] == pytest.approx(0.020)
+    assert payload["breakeven_exact"] < payload["breakeven_quoted"]
+    assert payload["breakeven_exact"] == pytest.approx(1.025 / 1.005 - 1.0)
+
+
+def test_the_linker_splits_the_next_years_accretion(
+    quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(["--json", *linker_argv(quote_file, index_file, "--real-yield", "0.005")])
+        == 0
+    )
+    split = json.loads(capsys.readouterr().out)["accretion_one_year"]
+    assert 0.0 < split["published_share"] < 1.0
+    assert (1.0 + split["published"]) * (1.0 + split["projected"]) == pytest.approx(
+        1.0 + split["total"]
+    )
+
+
+def test_the_linker_lists_flows_when_asked(
+    quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = linker_argv(quote_file, index_file, "--real-yield", "0.005", "--flows")
+    assert main(["--json", *argv]) == 0
+    flows = json.loads(capsys.readouterr().out)["flows"]
+    assert len(flows) > 2
+    assert any(flow["projected"] for flow in flows)
+    assert not flows[0]["projected"]
+    # The final coupon and the principal are separate flows on the same day,
+    # because only one of them is floored.
+    last_day = flows[-1]["payment"]
+    assert sum(1 for flow in flows if flow["payment"] == last_day) == 2
+
+
+def test_the_linker_can_turn_the_floor_off(
+    quote_file: str, index_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deflating = tmp_path / "deflation.txt"
+    deflating.write_text(index_text(annual=-0.04))
+    argv = linker_argv(
+        quote_file, str(deflating), "--real-yield", "0.005", "--projection-off"
+    )
+    # `--projection-off` is not an option; the point of this call is the floor.
+    argv = [argument for argument in argv if argument != "--projection-off"]
+    assert main(["--json", *argv]) == 0
+    floored = json.loads(capsys.readouterr().out)
+    assert floored["deflation_floor_binds"] is True
+    assert floored["redemption_index_ratio"] == 1.0
+    assert main(["--json", *argv, "--no-floor"]) == 0
+    unfloored = json.loads(capsys.readouterr().out)
+    assert unfloored["deflation_floor_binds"] is False
+    assert unfloored["redemption_index_ratio"] < 1.0
+
+
+def test_a_real_price_and_a_real_yield_are_mutually_exclusive(
+    quote_file: str, index_file: str
+) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            linker_argv(
+                quote_file,
+                index_file,
+                "--real-yield",
+                "0.005",
+                "--real-quote",
+                "99.0",
+            )
+        )
+
+
+def test_the_projection_is_required(quote_file: str, index_file: str) -> None:
+    argv = [
+        argument
+        for argument in linker_argv(quote_file, index_file, "--real-yield", "0.005")
+        if argument not in {"--projection", "0.02"}
+    ]
+    with pytest.raises(SystemExit):
+        main(argv)
+
+
+class TestIndexFileParsing:
+    def test_a_good_file_round_trips(self) -> None:
+        index = parse_index(index_text(months=24))
+        assert index.first_month == (2018, 1)
+        assert index.last_month == (2019, 12)
+
+    def test_comments_and_blank_lines_are_skipped(self) -> None:
+        index = parse_index("# leading\n\n2024-01 100.0\n\n2024-02 100.5  # trailing\n")
+        assert index.published(2024, 2) == 100.5
+
+    def test_a_short_line_names_itself(self) -> None:
+        with pytest.raises(ValueError, match="line 2 has 1 fields"):
+            parse_index("2024-01 100.0\n2024-02\n")
+
+    def test_a_bad_month_names_itself(self) -> None:
+        with pytest.raises(ValueError, match="line 1: '2024' is not a month"):
+            parse_index("2024 100.0\n")
+        with pytest.raises(ValueError, match="is not a month"):
+            parse_index("2024-ab 100.0\n")
+
+    def test_a_month_out_of_range(self) -> None:
+        with pytest.raises(ValueError, match="no month 13"):
+            parse_index("2024-13 100.0\n")
+
+    def test_a_bad_level(self) -> None:
+        with pytest.raises(ValueError, match="not an index level"):
+            parse_index("2024-01 par\n")
+
+    def test_a_repeated_month(self) -> None:
+        with pytest.raises(ValueError, match="appears twice"):
+            parse_index("2024-01 100.0\n2024-01 101.0\n")
+
+    def test_an_empty_file(self) -> None:
+        with pytest.raises(ValueError, match="no figures"):
+            parse_index("# nothing but a comment\n")
+
+    def test_a_gap_is_reported_by_the_index_itself(self) -> None:
+        with pytest.raises(ValueError, match="2024-02 is missing"):
+            parse_index("2024-01 100.0\n2024-03 101.0\n")

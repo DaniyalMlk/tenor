@@ -168,5 +168,17 @@ jobs:
             --issued 2019-01-05 --fixing 0.004
           tenor --json curve examples/quotes.txt --reference 2021-01-05 \
             --basis ACT_365F > /dev/null
+          tenor linker examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+            --index examples/cpi.txt --maturity 2031-01-05 --coupon 0.015 \
+            --base-index 100.5 --issued 2019-01-05 --projection 0.02 \
+            --real-yield 0.005 --nominal-yield 0.022 --flows
+          tenor linker examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+            --index examples/cpi.txt --maturity 2031-01-05 --coupon 0.015 \
+            --base-index 100.5 --issued 2019-01-05 --projection 0.02 \
+            --real-quote 98.5 --no-floor
           tenor --json floating examples/quotes.txt --reference 2021-01-05 \
             --basis ACT_365F --maturity 2026-01-05 --quoted-margin 0.0075 > /dev/null
+          tenor --json linker examples/quotes.txt --reference 2021-01-05 \
+            --basis ACT_365F --index examples/cpi.txt --maturity 2031-01-05 \
+            --coupon 0.015 --base-index 100.5 --issued 2019-01-05 \
+            --projection 0.02 --real-yield 0.005 > /dev/null
