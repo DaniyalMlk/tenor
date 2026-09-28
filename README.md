@@ -155,6 +155,26 @@ note.spread_duration(curve, date(2024, 1, 17), margin=0.0075)      # 4.77 years
 note.discount_margin(curve, 99.0, date(2024, 1, 17)).value         # 0.009608
 ```
 
+```python
+from tenor import LinkedBond, ReferenceIndex, breakeven_inflation
+
+index = ReferenceIndex({(2025, 6): 106.5, (2025, 7): 106.7, (2025, 8): 107.0})
+index.last_known_date()                     # 2025-11-01: the lag reaches this far
+
+linker = LinkedBond(
+    date(2022, 4, 1), date(2032, 4, 1), coupon=0.015, base_index=100.5,
+    frequency=Frequency.SEMI_ANNUAL, basis=Basis.ACT_ACT_ISDA,
+)
+
+linker.index_ratio(index, date(2025, 9, 15))            # 1.065498
+linker.real_clean_price(0.011, date(2025, 9, 15))       # 102.5187, quoted real
+linker.settlement_amount(102.5187, index, date(2025, 9, 15))   # 109.9626, money
+linker.real_modified_duration(0.011, date(2025, 9, 15)) # 6.19 years
+
+breakeven_inflation(0.0425, 0.011)                      # 0.031157, Fisher exact
+breakeven_inflation(0.0425, 0.011, exact=False)         # 0.031500, as quoted
+```
+
 ## The command line
 
 ```
@@ -341,6 +361,81 @@ Coupons paid inside the window are reinvested at the curve's own forward rates.
 That is the only assumption under which the identity holds; reinvesting at a
 chosen rate would make carry differ from the financing cost by the size of the
 view, which is a fact about the view and not about the bond.
+
+### Half of a linker's next quarter of inflation is already published
+
+An index-linked bond references a price index three months back, interpolated by
+day of month, because the index for this month does not exist yet when this month
+settles. The consequence is not symmetrical and is easy to state wrongly. The
+reference index is determined out to the first of the month three months after the
+last published figure — from mid-September with a series through August, that is
+1 November, six weeks away rather than three months. On a 2% path from that date,
+51.4% of the next quarter's accretion is arithmetic, 25.7% of the next six
+months' and 12.7% of the next year's, and the share falls through each month until
+the next print lands. `index_accretion` splits the two, because a caller hedging a
+three-month inflation exposure with a linker is trading something about half of
+whose payoff is already fixed.
+
+The interpolation itself is worth 15bp of index level by the end of a month: on
+the series in the tests the 28th of September reads 107.159 interpolated against
+107.000 stepped. Both conventions exist in the market — modern linkers interpolate
+daily, index-linked gilts before 2005 stepped once a month on an eight-month lag —
+so `IndexInterpolation` names the choice rather than assuming one.
+
+### A linker is quoted in real terms and settles in money
+
+The price and yield on the screen are real; the invoice is the real *dirty* price
+times the index ratio at settlement. Indexing the clean price and adding
+unindexed accrued is the plausible mistake, and it is invisible on a new issue
+because the ratio is near one — on the bond above, with 6.5% of cumulative
+accretion behind it, it is 4 cents per 100 and growing. Every method here says
+which space it is in, and the real ones delegate to the fixed-coupon bond rather
+than restating the street discounting convention.
+
+Real duration is not comparable with a nominal bond's. The linker above has a real
+modified duration of 6.19 years against 5.59 for a 4% nominal of the same
+maturity, and the gap is almost entirely the coupon: a 1.5% real coupon puts more
+of its value at the end. It is a sensitivity to the real yield, and the invoice
+also moves with the index ratio — which is the instrument's reason to exist rather
+than a risk to hedge.
+
+### The deflation floor is on the principal, and the last coupon is not principal
+
+On the US structure the principal returned is the greater of the index ratio and
+one, and the coupons are unfloored. So a bond in cumulative deflation redeems at
+par while its coupons keep shrinking, and `redemption_ratio` reports whether the
+floor binds rather than applying it silently.
+
+This produced a defect worth recording. The fixed-coupon bond bundles the final
+coupon into the redemption payment, as it should — they are one wire. Flooring
+that bundle's index ratio floors the final coupon as well, which is a different
+and more valuable bond. It can only show up on one in cumulative deflation, so
+nothing else in the suite would have caught it. The final coupon and the
+principal are now separate flows on the same day.
+
+### Breakeven inflation is not the difference of two yields
+
+It is quoted as one, and the Fisher relation is multiplicative. At a 4.5% nominal
+against a 2.0% real the quoted difference is 250.0bp and the exact rate is
+245.1bp; the gap is the cross term, so it widens with the level of both and
+reaches 19.2bp at 9% against 4%. Both forms are available and the exact one is the
+default, because 4.9bp is wider than the bid-offer on the spread it is quoted as.
+
+Neither number is an inflation expectation. Both are that plus an inflation risk
+premium plus the liquidity difference between two bonds, and two prices do not
+identify three things. `implied_inflation_from_price` is the other route — the
+constant inflation path that reprices the linker off a nominal curve — and it is
+worth having both, because that one takes the curve as given instead of
+inheriting a second bond's liquidity.
+
+### A gap in an index series is refused
+
+A missing monthly print, interpolated across, becomes a plausible number that
+nobody published. `ReferenceIndex` requires a contiguous series and names the
+month that is absent. Projecting past the end of the series is a different matter:
+it is the ordinary condition of every flow beyond the next quarter, so it raises
+`Unpublished` — which the caller answers by supplying an inflation rate, not by
+fixing the call.
 
 ### "30/360" names three different rules
 

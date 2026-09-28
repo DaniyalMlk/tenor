@@ -233,3 +233,58 @@ the reset to take a forward from — and it now refuses with the fixing named. A
 settlement date past maturity left no flows, so the sum over an empty sequence
 priced a matured note at 0.0 and every risk number built on it would have divided
 by it.
+
+## Phase 10 — Index-linked bonds
+
+The library priced fixed-coupon bullets, floating rate notes and callables, and
+had nothing for the third major cash government instrument. Almost nothing about
+an index-linked bond is arithmetic: it is a stack of conventions, and swapping any
+one of them for the plausible alternative gives a number in the right
+neighbourhood.
+
+- [x] A published monthly index with the three-month lag and day-of-month
+      interpolation, refusing a series with a gap in it rather than interpolating
+      an absent print into a plausible number
+- [x] The monthly-step convention alongside the daily one, and an arbitrary lag,
+      since both exist in the market
+- [x] Real and index space kept apart in every method name: the quoted price and
+      yield real, the invoice the real dirty price times the ratio at settlement
+- [x] Projection past the published history as a required argument, never a
+      default, with the flows that needed it flagged in the output
+- [x] The deflation floor on the principal only, reported rather than applied
+      silently, with the final coupon separated from the redemption it is wired
+      with
+- [x] Breakeven inflation in both the quoted and the exact Fisher form, plus the
+      inflation implied by a nominal curve and an invoice
+- [x] Accretion between two dates split into what is published and what is
+      assumed
+- [x] A `linker` command taking an index series file, with the parser naming the
+      line as the quote parser does
+
+The number the lag exists to produce is how much of the near-term accretion is
+already arithmetic, and it is smaller than the lag suggests. The reference index is
+determined to the first of the month three months after the last print, so from
+mid-September with a series through August it reaches 1 November — six weeks, not
+three months. On a 2% path: 51.4% of the next quarter is published, 25.7% of six
+months and 12.7% of a year, falling through each month until the next print.
+
+The interpolation is worth having named. By the 28th of a month the daily
+convention reads 107.159 against 107.000 stepped, 15bp of index level, which is
+15bp of invoice on a bond at par.
+
+Breakeven measured in both forms: 250.0bp quoted against 245.1bp exact at a 4.5%
+nominal on a 2.0% real, and 19.2bp of difference at 9% on 4%. The gap is the cross
+term and it is wider than the bid-offer on the spread it is quoted as.
+
+Real duration is not comparable with a nominal bond's: 6.19 years on the 1.5% real
+of 2032 against 5.59 for a 4% nominal of the same maturity, which is the coupon
+difference and not an inflation effect.
+
+One defect found by the tests. The fixed-coupon bond bundles the final coupon into
+the redemption payment, correctly — they are one wire — and flooring that bundle's
+index ratio floors the final coupon too, which is a more valuable bond. It can
+only appear on a bond in cumulative deflation, so no other test here would have
+reached it. The two are now separate flows on the same day. And the guard against
+projecting backwards sat after the year fraction, which refuses a backwards
+interval itself with a message about day counts; it now runs first and names the
+anchor.
