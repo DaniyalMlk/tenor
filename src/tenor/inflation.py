@@ -244,13 +244,16 @@ class ReferenceIndex:
         if self.is_known(day):
             return self.reference(day)
         start = anchor if anchor is not None else self.last_known_date()
-        base = self.reference(start)
-        years = year_fraction(start, day, Basis.ACT_365F)
-        if years < 0.0:
+        # Ordered before the year fraction rather than after: `year_fraction`
+        # refuses a backwards interval itself, with a message about day counts,
+        # which names the symptom rather than the problem.
+        if day < start:
             raise BadIndex(
                 f"{day.isoformat()} is before the projection anchor "
                 f"{start.isoformat()} and is not published either"
             )
+        base = self.reference(start)
+        years = year_fraction(start, day, Basis.ACT_365F)
         # float ** float is complex in general, so the narrowing happens here,
         # as it does in `tenor.bond._discount`.
         return base * float((1.0 + rate) ** years)
@@ -469,15 +472,44 @@ class LinkedBond:
                 ratio = (
                     index.projected(flow.day, rate=projection) / self.base_index
                 )
-            if flow.redemption and self.deflation_floor:
-                ratio = max(ratio, 1.0)
+            if not flow.redemption:
+                flows.append(
+                    LinkedCashflow(
+                        day=flow.day,
+                        real_amount=flow.amount,
+                        index_ratio=ratio,
+                        periods=flow.periods,
+                        projected=not known,
+                    )
+                )
+                continue
+            # The fixed-coupon bond bundles the final coupon into the redemption
+            # payment, and the two are indexed differently: the floor is on the
+            # principal only. Bundled, a floored ratio would floor the last
+            # coupon as well, which is a more valuable bond than this one — and it
+            # would only show up on a bond in cumulative deflation, so it would
+            # not show up at all in most testing. They are emitted separately.
+            final_coupon = flow.amount - self.redemption
+            if final_coupon > 0.0:
+                flows.append(
+                    LinkedCashflow(
+                        day=flow.day,
+                        real_amount=final_coupon,
+                        index_ratio=ratio,
+                        periods=flow.periods,
+                        projected=not known,
+                    )
+                )
+            principal_ratio = (
+                max(ratio, 1.0) if self.deflation_floor else ratio
+            )
             flows.append(
                 LinkedCashflow(
                     day=flow.day,
-                    real_amount=flow.amount,
-                    index_ratio=ratio,
+                    real_amount=self.redemption,
+                    index_ratio=principal_ratio,
                     periods=flow.periods,
-                    redemption=flow.redemption,
+                    redemption=True,
                     projected=not known,
                 )
             )
