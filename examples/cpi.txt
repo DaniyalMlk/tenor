@@ -1,0 +1,46 @@
+# A monthly price index, one figure per line, as a statistical office
+# publishes it: the month it describes, and the level. The series ends in
+# November 2020, which is the ordinary state of affairs on the 5th of
+# January 2021 -- the December figure does not exist yet, and with a
+# three-month lag nothing before February 2021 needs it.
+#
+# It compounds at exactly 2% a year from 100.0 at 2018-01, so anything
+# derived from it can be checked against arithmetic. A real series is not
+# this smooth, and in particular it has seasonality, which interpolating
+# between two monthly figures does not model.
+
+2018-01  100.000000
+2018-02  100.165158
+2018-03  100.330589
+2018-04  100.496293
+2018-05  100.662271
+2018-06  100.828523
+2018-07  100.995049
+2018-08  101.161851
+2018-09  101.328928
+2018-10  101.496281
+2018-11  101.663910
+2018-12  101.831816
+2019-01  102.000000
+2019-02  102.168461
+2019-03  102.337201
+2019-04  102.506219
+2019-05  102.675516
+2019-06  102.845093
+2019-07  103.014950
+2019-08  103.185088
+2019-09  103.355506
+2019-10  103.526207
+2019-11  103.697188
+2019-12  103.868453
+2020-01  104.040000
+2020-02  104.211831
+2020-03  104.383945
+2020-04  104.556343
+2020-05  104.729027
+2020-06  104.901995
+2020-07  105.075249
+2020-08  105.248790
+2020-09  105.422617
+2020-10  105.596731
+2020-11  105.771132

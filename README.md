@@ -222,11 +222,31 @@ spread_duration: 4.827613483
 rate_duration: -7.105427358e-13
 margin_value_of_a_basis_point: 0.0482635851
 coupon_count: 20
+
+$ tenor linker examples/quotes.txt --reference 2021-01-05 --basis ACT_365F \
+      --index examples/cpi.txt --maturity 2031-01-05 --coupon 0.015 \
+      --base-index 100.5 --issued 2019-01-05 --projection 0.02 \
+      --real-yield 0.005 --nominal-yield 0.022
+bond: 1.500% linker of 2031-01-05
+index_published_to: 2020-11
+reference_index_known_to: 2021-02-01
+index_ratio: 1.050937655
+real_yield: 0.005
+real_clean: 109.7422441
+real_modified_duration: 9.338612259
+settlement_amount: 115.3322567
+redemption_index_ratio: 1.281190635
+deflation_floor_binds: False
+inflation_implied_by_the_invoice: 0.01718356716
+breakeven_exact: 0.01691542289
+breakeven_quoted: 0.017
+accretion_one_year: {'total': 0.01997172, 'published': 0.00143816,
+                     'projected': 0.01850694, 'published_share': 0.07200994,
+                     'published_through': '2021-02-01'}
 ```
 
-`--basis` is required, not defaulted. Also `price`, `risk`, `horizon` and
-`floating`;
-`--json` on any of them. Every subcommand reports the identity that goes with its numbers — the
+`--basis` is required, not defaulted. Also `price`, `risk`, `horizon`,
+`floating` and `linker`; `--json` on any of them. Every subcommand reports the identity that goes with its numbers — the
 repricing error, the key rate sum against the total duration, whether the
 lattice reprices the curve — rather than only the numbers.
 
@@ -427,6 +447,11 @@ identify three things. `implied_inflation_from_price` is the other route — the
 constant inflation path that reprices the linker off a nominal curve — and it is
 worth having both, because that one takes the curve as given instead of
 inheriting a second bond's liquidity.
+
+The two routes agreeing is a useful check on both, since they share no code: on
+the bundled example the invoice implies 1.7184% against a two-yield breakeven of
+1.6915%, 2.7bp apart, which is the shape of the curve against the single yield
+rather than an error in either.
 
 ### A gap in an index series is refused
 
