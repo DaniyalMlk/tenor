@@ -33,6 +33,13 @@ from .curve import Interpolation
 from .daycount import Basis
 from .floating import FloatingNote
 from .horizon import horizon_return
+from .inflation import (
+    LinkedBond,
+    ReferenceIndex,
+    breakeven_inflation,
+    implied_inflation_from_price,
+    index_accretion,
+)
 from .instruments import Deposit, Future, Instrument, Swap
 from .lattice import (
     Exercise,
@@ -145,6 +152,69 @@ def build(arguments: argparse.Namespace) -> Bootstrapped:
         quotes,
         basis=_basis(arguments.basis),
         interpolation=_interpolation(arguments.interpolation),
+    )
+
+
+def parse_index(text: str) -> ReferenceIndex:
+    """Parse a published index series: one ``YYYY-MM level`` per line.
+
+    Errors name the line, for the same reason the quote parser does: a series of
+    price levels is the kind of file that gets pasted together by hand, and "line
+    14 is not a month" is a different piece of information from a traceback out of
+    a dataclass.
+    """
+    values: dict[tuple[int, int], float] = {}
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        if len(fields) != 2:
+            raise ValueError(
+                f"line {number} has {len(fields)} fields; an index line is a "
+                f"month and a level: 2025-08 132.4"
+            )
+        month, level = fields
+        parts = month.split("-")
+        if len(parts) != 2:
+            raise ValueError(
+                f"line {number}: {month!r} is not a month; write it as 2025-08"
+            )
+        try:
+            year, month_number = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError(
+                f"line {number}: {month!r} is not a month; write it as 2025-08"
+            ) from None
+        if not 1 <= month_number <= 12:
+            raise ValueError(
+                f"line {number}: there is no month {month_number}"
+            )
+        try:
+            value = float(level)
+        except ValueError:
+            raise ValueError(
+                f"line {number}: {level!r} is not an index level"
+            ) from None
+        if (year, month_number) in values:
+            raise ValueError(
+                f"line {number}: {year}-{month_number:02d} appears twice"
+            )
+        values[(year, month_number)] = value
+    if not values:
+        raise ValueError("the index file has no figures in it")
+    return ReferenceIndex(values)
+
+
+def _linker(arguments: argparse.Namespace, reference: date) -> LinkedBond:
+    return LinkedBond(
+        date.fromisoformat(arguments.issued) if arguments.issued else reference,
+        date.fromisoformat(arguments.maturity),
+        arguments.coupon,
+        arguments.base_index,
+        Frequency[arguments.frequency.upper()],
+        _basis(arguments.linker_basis),
+        deflation_floor=not arguments.no_floor,
     )
 
 
@@ -285,6 +355,100 @@ def run_floating(arguments: argparse.Namespace) -> dict[str, object]:
         ]
     if arguments.quote is not None:
         result["quoted_clean"] = arguments.quote
+    return result
+
+
+def run_linker(arguments: argparse.Namespace) -> dict[str, object]:
+    """Price an index-linked bond, in both spaces, and split its accretion.
+
+    The report keeps real and nominal apart throughout, because the quoted price
+    and yield are real and the money that changes hands is neither. It also says
+    how much of the accretion over the next year is already published: the lag
+    means a linker's near-term inflation exposure is largely arithmetic, and how
+    much depends on where in the publication cycle the question is asked.
+    """
+    built = build(arguments)
+    reference = built.curve.reference
+    index = parse_index(Path(arguments.index).read_text())
+    bond = _linker(arguments, reference)
+
+    if arguments.real_quote is not None:
+        solved = bond.real_yield_from_clean(arguments.real_quote, reference)
+        if not solved.converged:
+            raise ValueError(
+                f"the real yield did not converge against a clean price of "
+                f"{arguments.real_quote}: residual {solved.residual:.3g}"
+            )
+        real_yield = solved.value
+        real_clean = arguments.real_quote
+    else:
+        real_yield = arguments.real_yield
+        real_clean = bond.real_clean_price(real_yield, reference)
+
+    ratio = bond.index_ratio(index, reference)
+    redemption_ratio, floored = bond.redemption_ratio(
+        index, projection=arguments.projection
+    )
+    nominal = bond.nominal_price_from_curve(
+        built.curve, index, reference, projection=arguments.projection
+    )
+    invoice = bond.settlement_amount(real_clean, index, reference)
+    result: dict[str, object] = {
+        "bond": bond.name,
+        "settlement": reference.isoformat(),
+        "index_published_to": "{}-{:02d}".format(*index.last_month),
+        "reference_index_known_to": index.last_known_date().isoformat(),
+        "reference_index": index.reference(reference),
+        "index_ratio": ratio,
+        "real_yield": real_yield,
+        "real_clean": real_clean,
+        "real_accrued": bond.real_accrued(reference),
+        "real_modified_duration": bond.real_modified_duration(real_yield, reference),
+        "real_convexity": bond.real_convexity(real_yield, reference),
+        "settlement_amount": invoice,
+        "projection": arguments.projection,
+        "redemption_index_ratio": redemption_ratio,
+        "deflation_floor_binds": floored,
+        "nominal_present_value": nominal,
+    }
+    implied = implied_inflation_from_price(
+        bond, built.curve, index, reference, nominal_price=invoice
+    )
+    if implied.converged:
+        result["inflation_implied_by_the_invoice"] = implied.value
+    if arguments.nominal_yield is not None:
+        result["nominal_yield"] = arguments.nominal_yield
+        result["breakeven_exact"] = breakeven_inflation(
+            arguments.nominal_yield, real_yield
+        )
+        result["breakeven_quoted"] = breakeven_inflation(
+            arguments.nominal_yield, real_yield, exact=False
+        )
+    horizon = date(reference.year + 1, reference.month, reference.day)
+    split = index_accretion(
+        index, reference, horizon, bond.base_index, projection=arguments.projection
+    )
+    result["accretion_one_year"] = {
+        "total": split.total,
+        "published": split.known,
+        "projected": split.projected,
+        "published_share": split.known_fraction,
+        "published_through": split.known_through.isoformat(),
+    }
+    if arguments.flows:
+        result["flows"] = [
+            {
+                "payment": flow.day.isoformat(),
+                "real": flow.real_amount,
+                "index_ratio": flow.index_ratio,
+                "nominal": flow.nominal_amount,
+                "projected": flow.projected,
+                "redemption": flow.redemption,
+            }
+            for flow in bond.nominal_cashflows(
+                index, reference, projection=arguments.projection
+            )
+        ]
     return result
 
 
@@ -554,6 +718,83 @@ def parser() -> argparse.ArgumentParser:
         help="list every projected coupon with the rate and discount behind it",
     )
     floating.set_defaults(run=run_floating)
+
+    linked = subcommands.add_parser(
+        "linker",
+        help="price an index-linked bond and split its accretion",
+        description=(
+            "An index-linked bond is quoted in real terms and settles in money, "
+            "and the two differ by a ratio that is one at issue and drifts for "
+            "the life of the bond. Everything here says which space it is in. "
+            "The reference index carries the three-month lag, so part of the "
+            "accretion over the coming year is already published; the report "
+            "says how much."
+        ),
+    )
+    shared(linked)
+    linked.add_argument(
+        "--index", required=True, help="a file of published index levels"
+    )
+    linked.add_argument("--maturity", required=True, help="the bond's maturity, ISO")
+    linked.add_argument(
+        "--coupon", required=True, type=float, help="the real annual rate, as 0.015"
+    )
+    linked.add_argument(
+        "--base-index",
+        required=True,
+        type=float,
+        help="the reference index at the bond's dated date, which every index "
+        "ratio divides by. A property of the bond, fixed at issue.",
+    )
+    linked.add_argument(
+        "--issued",
+        default=None,
+        help="the bond's dated date, ISO. Defaults to the reference date.",
+    )
+    linked.add_argument(
+        "--frequency", default="SEMI_ANNUAL", choices=[one.name for one in Frequency]
+    )
+    linked.add_argument(
+        "--linker-basis",
+        default=Basis.ACT_ACT_ISDA.name,
+        choices=[one.name for one in Basis],
+    )
+    real = linked.add_mutually_exclusive_group(required=True)
+    real.add_argument(
+        "--real-yield", type=float, help="price at this real yield, as 0.012"
+    )
+    real.add_argument(
+        "--real-quote",
+        type=float,
+        help="a real clean price to solve the real yield against instead",
+    )
+    linked.add_argument(
+        "--projection",
+        required=True,
+        type=float,
+        help="annual inflation for every flow past the published index. Required "
+        "rather than defaulted, because it is an assumption about the future "
+        "price level and a default of zero would be a silent one.",
+    )
+    linked.add_argument(
+        "--nominal-yield",
+        type=float,
+        default=None,
+        help="a comparable nominal bond's yield, to report breakeven inflation "
+        "against in both the exact and the quoted form",
+    )
+    linked.add_argument(
+        "--no-floor",
+        action="store_true",
+        help="no deflation floor on the principal, as on an index-linked gilt. "
+        "The default floors it at par in index terms, as on a US linker.",
+    )
+    linked.add_argument(
+        "--flows",
+        action="store_true",
+        help="list every remaining flow in real and nominal terms",
+    )
+    linked.set_defaults(run=run_linker)
 
     option = subcommands.add_parser("option", help="value an embedded option")
     shared(option)
