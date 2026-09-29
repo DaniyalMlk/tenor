@@ -638,3 +638,147 @@ class TestIndexFileParsing:
     def test_a_gap_is_reported_by_the_index_itself(self) -> None:
         with pytest.raises(ValueError, match="2024-02 is missing"):
             parse_index("2024-01 100.0\n2024-03 101.0\n")
+
+
+# -- credit -------------------------------------------------------------------
+
+SPREADS = """
+# maturity, par spread in basis points
+2022-01-05,  60
+2024-01-05,  90
+2026-01-05, 120
+2031-01-05, 185
+"""
+
+
+@pytest.fixture
+def spread_file(tmp_path: Path) -> str:
+    path = tmp_path / "spreads.txt"
+    path.write_text(SPREADS)
+    return str(path)
+
+
+def test_credit_strips_a_curve_that_reprices_its_quotes(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", "credit", *shared(quote_file), "--spreads", spread_file]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recovery"] == 0.4
+    assert len(payload["pillars"]) == 4
+    assert payload["worst_repricing_error_bp"] < 1e-6
+    for pillar, quoted in zip(payload["pillars"], (60.0, 90.0, 120.0, 185.0), strict=True):
+        assert pillar["quoted_bp"] == pytest.approx(quoted)
+        assert pillar["repriced_bp"] == pytest.approx(quoted, abs=1e-6)
+
+
+def test_credit_reports_survival_falling_and_hazards_positive(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", "credit", *shared(quote_file), "--spreads", spread_file]) == 0
+    pillars = json.loads(capsys.readouterr().out)["pillars"]
+    survivals = [one["survival"] for one in pillars]
+    assert survivals == sorted(survivals, reverse=True)
+    assert all(0.0 < one["survival"] < 1.0 for one in pillars)
+    assert all(one["forward_hazard"] > 0.0 for one in pillars)
+    assert all(
+        one["survival"] + one["default_probability"] == pytest.approx(1.0, abs=1e-12)
+        for one in pillars
+    )
+
+
+def test_credit_prints_the_triangle_beside_the_stripped_hazard(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", "credit", *shared(quote_file), "--spreads", spread_file]) == 0
+    first = json.loads(capsys.readouterr().out)["pillars"][0]
+    # The triangle is the quoted spread over one minus recovery, exactly.
+    assert first["triangle_hazard"] == pytest.approx(0.0060 / 0.6, rel=1e-12)
+    # And it is close to the stripped rate without being it.
+    assert first["forward_hazard"] != first["triangle_hazard"]
+    assert abs(first["average_hazard"] / first["triangle_hazard"] - 1.0) < 0.05
+
+
+def test_credit_reports_the_average_hazard_not_only_the_forward(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The triangle produces a flat hazard to the maturity, so the comparable
+    # quantity is the average and not the last bucket's forward. On an
+    # upward-sloping curve the two diverge, and the long end is where a
+    # reader would otherwise conclude the rule of thumb is wildly wrong.
+    assert main(["--json", "credit", *shared(quote_file), "--spreads", spread_file]) == 0
+    pillars = json.loads(capsys.readouterr().out)["pillars"]
+    first, last = pillars[0], pillars[-1]
+    assert first["average_hazard"] == pytest.approx(first["forward_hazard"], rel=1e-12)
+    assert last["forward_hazard"] > last["average_hazard"] > first["average_hazard"]
+    # Against the triangle, the average is close and the forward is not.
+    assert abs(last["average_hazard"] / last["triangle_hazard"] - 1.0) < 0.15
+    assert last["forward_hazard"] / last["triangle_hazard"] > 1.3
+
+
+def test_credit_prices_a_bond_below_its_riskless_value(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "--json",
+                "credit",
+                *shared(quote_file),
+                "--spreads",
+                spread_file,
+                "--bond-maturity",
+                "2026-01-05",
+                "--bond-coupon",
+                "0.05",
+            ]
+        )
+        == 0
+    )
+    bond = json.loads(capsys.readouterr().out)["bond"]
+    assert bond["risky_price"] < bond["riskless_price"]
+    assert bond["credit_cost"] == pytest.approx(
+        bond["riskless_price"] - bond["risky_price"], rel=1e-12
+    )
+    assert bond["credit_cost"] > 0.0
+
+
+def test_credit_recovery_moves_the_price_the_right_way(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prices = []
+    for recovery in ("0.1", "0.4", "0.7"):
+        arguments = [
+            "--json", "credit", *shared(quote_file), "--spreads", spread_file,
+            "--recovery", recovery, "--bond-maturity", "2026-01-05",
+        ]
+        assert main(arguments) == 0
+        prices.append(json.loads(capsys.readouterr().out)["bond"]["risky_price"])
+    # Spreads are held fixed, so a higher assumed recovery means a higher
+    # stripped hazard rate -- and the two effects on a bond very nearly
+    # cancel, which is the whole reason a recovery assumption is hard to
+    # pin down from spreads alone. What must not happen is a wild swing.
+    assert max(prices) / min(prices) - 1.0 < 0.05
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("2022-01-05\n", "expected"),
+        ("2022-01-05, 60, 70\n", "expected"),
+        ("not-a-date, 60\n", "not an ISO date"),
+        ("2022-01-05, wide\n", "not a number"),
+        ("# only a comment\n", "no quotes"),
+    ],
+)
+def test_credit_names_the_line_of_a_bad_spread_file(
+    quote_file: str, tmp_path: Path, text: str, message: str
+) -> None:
+    path = tmp_path / "bad.txt"
+    path.write_text(text)
+    assert main(["credit", *shared(quote_file), "--spreads", str(path)]) == 2
+
+
+def test_credit_refuses_out_of_order_maturities(quote_file: str, tmp_path: Path) -> None:
+    path = tmp_path / "unsorted.txt"
+    path.write_text("2026-01-05, 120\n2022-01-05, 60\n")
+    assert main(["credit", *shared(quote_file), "--spreads", str(path)]) == 2

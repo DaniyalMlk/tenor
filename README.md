@@ -804,6 +804,87 @@ almost always a schedule generated backwards — not a negative quantity. Return
 as a number it travels a long way before anything notices, so it is refused at
 the point it is asked for.
 
+## Default risk, and what the credit triangle is actually worth
+
+Everything above discounts a cashflow that arrives. `tenor.credit` prices the
+possibility that it does not: a survival curve held as a piecewise-constant
+forward hazard rate, credit default swaps with both legs, a bootstrap from par
+spreads, and bonds discounted for default with recovery on face.
+
+```bash
+tenor credit quotes.txt --reference 2026-06-15 --basis ACT_365F \
+  --spreads spreads.txt --bond-maturity 2031-06-15 --bond-coupon 0.05
+```
+
+### The integrals are closed form
+
+A protection leg is `(1 - R) integral DF(s) dQ(s)`, and the temptation is to
+put a fine grid under it. There is no need. On any interval where the hazard
+rate and the instantaneous forward rate are both constant,
+`DF(s) S(s) = DF(a) S(a) exp(-(r + h)(s - a))` and the integral is elementary.
+Take the grid to be the union of the discount curve's pillars, the hazard
+pillars and the coupon dates and both are constant on every piece, so the
+answer is exact for the curve as interpolated rather than convergent to it.
+The accrual-on-default term — the same integral weighted by time since the
+last coupon — is elementary for the same reason and is computed, not
+approximated by half a period.
+
+### The credit triangle is exact, and then it is not
+
+`spread = hazard x (1 - recovery)` is the rule everybody uses, and the first
+surprise is how good it is. **With accrual on default and a zero interest
+rate it is not an approximation at all: it is exact**, for any hazard rate and
+any premium frequency. Integrating the accrual term by parts turns each
+period's contribution into the integral of the survival probability over that
+period; the discrete premium dates cancel completely and the annuity collapses
+to `(1 - S(T)) / h`, which divides the protection leg to give exactly
+`h (1 - R)`.
+
+So the error is not about the credit. Measured, it is two effects of the same
+shape, both linear in the length of a premium period:
+
+| | relative effect | measured, quarterly at r = 3% |
+|---|---|---|
+| discounting lifts the true spread above the triangle | `+ r x period / 2` | +0.374% (predicted 0.375%) |
+| dropping accrual on default lifts it further | `+ h x period / 2` | +1.257% at h = 10% (predicted 1.250%) |
+
+Both hold across annual, semi-annual and quarterly premiums and across rates
+from 1% to 10%, to within a few per cent of themselves — the residue is second
+order. The first says something unintuitive: **the triangle's error depends on
+the interest rate and the premium frequency and hardly at all on the hazard
+rate**, so it is no worse on a distressed name than on an investment grade one.
+
+Day counts add a third, larger effect that is nothing to do with either. Market
+premiums accrue on actual/360 while a curve counts actual/365, so a premium
+year is 365/360 of a hazard year and the fair spread is lower in the same
+proportion: 1.389%, against which the discounting adds back 0.375%, leaving the
+triangle high by 1.01%. The suite asserts that composition rather than the
+total.
+
+### Two defects the tests found
+
+The recovery leg on a bond was not scaled by face. Recovery is a fraction of
+the redemption amount, which is 100 in the convention this package prices in
+and not 1 — so the term was two orders of magnitude too small while everything
+else was very nearly right, which is the sort of error that survives a smoke
+test.
+
+And the bootstrap did not reprice its own inputs. A pillar placed at a quote's
+maturity leaves that quote's final premium — paid on the *rolled* maturity, a
+day or three later — discounted at the next quote's hazard rate. The error is
+about three parts in a hundred million, which reads exactly like solver noise.
+Pillars now sit at the last date their quote touches, and the repricing is
+exact to 1e-13 of a basis point.
+
+### One thing the command line will not let you misread
+
+The triangle produces a *flat* hazard rate to a maturity, so the quantity to
+compare it against is the average hazard to that date and not the forward rate
+over the last bucket. On an upward-sloping curve those diverge: at ten years
+the forward is half as much again as the average, and a reader seeing the
+forward beside the triangle would conclude the rule of thumb is wildly wrong
+when it is out by nine per cent. Both are printed, labelled.
+
 ## Development
 
 ```bash

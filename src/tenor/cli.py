@@ -29,6 +29,13 @@ from pathlib import Path
 from . import __version__
 from .bond import Bond
 from .bootstrap import Bootstrapped, bootstrap
+from .calendar import WEEKENDS_ONLY
+from .credit import (
+    CreditDefaultSwap,
+    bootstrap_hazards,
+    risky_bond_price,
+    triangle_hazard,
+)
 from .curve import Interpolation
 from .daycount import Basis
 from .floating import FloatingNote
@@ -583,6 +590,125 @@ def _show(item: object) -> str:
     return str(item)
 
 
+def _credit_quotes(text: str) -> list[tuple[date, float]]:
+    """Parse ``maturity,spread`` rows, naming the line of anything malformed.
+
+    Spreads are read in basis points, because that is how they are quoted and
+    a file of decimals is one misplaced factor of ten from a curve that looks
+    entirely plausible.
+    """
+    quotes: list[tuple[date, float]] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [cell.strip() for cell in line.replace(",", " ").split()]
+        if len(parts) != 2:
+            raise ValueError(
+                f"line {number}: {raw.strip()!r} has {len(parts)} fields, expected "
+                "a maturity and a spread in basis points"
+            )
+        try:
+            maturity = date.fromisoformat(parts[0])
+        except ValueError as bad:
+            raise ValueError(f"line {number}: {parts[0]!r} is not an ISO date") from bad
+        try:
+            spread = float(parts[1])
+        except ValueError as bad:
+            raise ValueError(f"line {number}: {parts[1]!r} is not a number") from bad
+        quotes.append((maturity, spread / 1e4))
+    if not quotes:
+        raise ValueError("the spread file holds no quotes")
+    return quotes
+
+
+def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
+    """Strip a survival curve from par spreads and say what it implies.
+
+    The credit triangle is printed beside every stripped hazard rate rather
+    than instead of it. The rule of thumb is close enough to be useful and
+    wrong by an amount that depends on the interest rate and the premium
+    frequency rather than on the credit, which is not what most people expect
+    of it, so showing both is more informative than showing either.
+    """
+    built = build(arguments)
+    reference = built.curve.reference
+    quotes = _credit_quotes(Path(arguments.spreads).read_text())
+    frequency = Frequency[arguments.frequency.upper()]
+    swaps = [
+        CreditDefaultSwap.standard(
+            reference,
+            maturity,
+            0.0,
+            calendar=WEEKENDS_ONLY,
+            basis=_basis(arguments.premium_basis),
+            frequency=frequency,
+        )
+        for maturity, _ in quotes
+    ]
+    spreads = [spread for _, spread in quotes]
+    curve = bootstrap_hazards(
+        swaps,
+        spreads,
+        built.curve,
+        recovery=arguments.recovery,
+        basis=_basis(arguments.basis),
+    )
+
+    points = []
+    worst = 0.0
+    for pillar, swap, quoted in zip(curve.pillars, swaps, spreads, strict=True):
+        repriced = swap.par_spread(curve, built.curve)
+        worst = max(worst, abs(repriced - quoted))
+        points.append(
+            {
+                "date": pillar.day.isoformat(),
+                "years": round(pillar.time, 6),
+                "quoted_bp": round(quoted * 1e4, 6),
+                "repriced_bp": round(repriced * 1e4, 6),
+                "forward_hazard": pillar.hazard,
+                # The triangle produces a *flat* hazard to the maturity, so
+                # the thing to compare it against is the average hazard to
+                # that date, not the forward rate over the last bucket. At
+                # the long end of an upward-sloping curve those differ by
+                # half as much again, and putting the forward beside the
+                # triangle invites exactly the wrong reading.
+                "average_hazard": pillar.hazard
+                if pillar.time <= 0.0
+                else curve.integrated_hazard(pillar.time) / pillar.time,
+                "triangle_hazard": triangle_hazard(quoted, arguments.recovery),
+                "survival": curve.survival(pillar.day),
+                "default_probability": curve.default_probability(pillar.day),
+                "risky_annuity": swap.risky_annuity(curve, built.curve),
+            }
+        )
+
+    result: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "recovery": arguments.recovery,
+        "worst_repricing_error_bp": worst * 1e4,
+        "pillars": points,
+    }
+    if arguments.bond_maturity:
+        bond = Bond(
+            effective=reference,
+            maturity=date.fromisoformat(arguments.bond_maturity),
+            coupon=arguments.bond_coupon,
+            frequency=frequency,
+            basis=_basis(arguments.basis),
+        )
+        risky = risky_bond_price(bond, curve, built.curve)
+        riskless = bond.price_from_curve(built.curve, reference)
+        result["bond"] = {
+            "maturity": bond.maturity.isoformat(),
+            "coupon": arguments.bond_coupon,
+            "riskless_price": riskless,
+            "risky_price": risky,
+            "credit_cost": riskless - risky,
+        }
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="tenor", description="Build a curve from quotes and measure things on it."
@@ -806,6 +932,45 @@ def parser() -> argparse.ArgumentParser:
         "--put", action="store_true", help="the holder's option rather than the issuer's"
     )
     option.set_defaults(run=run_option)
+
+    credit = subcommands.add_parser(
+        "credit",
+        help="strip a survival curve from credit default swap spreads",
+        description=(
+            "Bootstraps a piecewise-constant hazard rate from par spreads quoted "
+            "in basis points, one per line as 'maturity,spread', and reports the "
+            "survival probabilities it implies. The credit triangle's answer is "
+            "printed beside each stripped rate, because the two differ by an "
+            "amount that depends on the interest rate and the premium frequency "
+            "rather than on the credit."
+        ),
+    )
+    shared(credit)
+    credit.add_argument(
+        "--spreads", required=True, help="a file of maturity,spread-in-basis-points rows"
+    )
+    credit.add_argument(
+        "--recovery", type=float, default=0.4, help="fraction of face recovered"
+    )
+    credit.add_argument(
+        "--frequency",
+        default="QUARTERLY",
+        choices=[one.name for one in Frequency],
+        help="premium frequency",
+    )
+    credit.add_argument(
+        "--premium-basis",
+        dest="premium_basis",
+        default="ACT_360",
+        choices=[one.name for one in Basis],
+        help="day count the premium accrues on, which is not the curve's",
+    )
+    credit.add_argument(
+        "--bond-maturity", dest="bond_maturity", default=None, help="also price a bond"
+    )
+    credit.add_argument("--bond-coupon", dest="bond_coupon", type=float, default=0.05)
+    credit.set_defaults(run=run_credit)
+
     return root
 
 
