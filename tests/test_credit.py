@@ -612,3 +612,52 @@ class TestRiskyBond:
         value = risky_bond_price(self.BOND, curve, discount())
         naive = 0.4 * self.riskless() + 0.6 * value
         assert naive > value
+
+
+class TestTheFiguresInTheReadme:
+    """Every number the README quotes about the triangle, recomputed."""
+
+    def test_the_quarterly_discount_effect(self) -> None:
+        exact = swap(frequency=Frequency.QUARTERLY).par_spread(
+            flat_hazard(0.02), discount(0.03)
+        )
+        excess = exact / triangle_spread(0.02, RECOVERY) - 1.0
+        assert 100.0 * excess == pytest.approx(0.374, abs=2e-3)
+        predicted = 100.0 * 0.03 * 0.25 / 2.0
+        assert predicted == pytest.approx(0.375, abs=1e-9)
+
+    def test_the_quarterly_accrual_effect_at_a_ten_per_cent_hazard(self) -> None:
+        curve, curve_discount = flat_hazard(0.10), discount(0.03)
+        with_it = swap(frequency=Frequency.QUARTERLY).par_spread(curve, curve_discount)
+        without = swap(frequency=Frequency.QUARTERLY, accrual=False).par_spread(
+            curve, curve_discount
+        )
+        assert 100.0 * (without / with_it - 1.0) == pytest.approx(1.257, abs=5e-3)
+        predicted = 100.0 * 0.10 * 0.25 / 2.0
+        assert predicted == pytest.approx(1.250, abs=1e-9)
+
+    def test_the_day_count_composition(self) -> None:
+        curve, curve_discount = flat_hazard(0.02), discount(0.03)
+        market = swap(basis=Basis.ACT_360).par_spread(curve, curve_discount)
+        triangle = triangle_spread(0.02, RECOVERY)
+        ratio = 100.0 * (365.0 / 360.0 - 1.0)
+        assert ratio == pytest.approx(1.389, abs=1e-3)
+        assert 100.0 * (triangle / market - 1.0) == pytest.approx(1.01, abs=2e-2)
+
+    def test_the_bootstrap_reprices_to_a_fraction_of_a_basis_point(self) -> None:
+        curve = TestBootstrap().curve()
+        worst = max(
+            abs(swap(maturity).par_spread(curve, discount()) - quoted)
+            for maturity, quoted in zip(
+                TestBootstrap.MATURITIES, TestBootstrap.SPREADS, strict=True
+            )
+        )
+        assert 1e4 * worst < 1e-13
+
+    def test_the_forward_is_half_as_much_again_as_the_average_at_ten_years(self) -> None:
+        curve = TestBootstrap().curve()
+        last = curve.pillars[-1]
+        average = curve.integrated_hazard(last.time) / last.time
+        assert last.hazard / average == pytest.approx(1.5, abs=0.2)
+        triangle = triangle_hazard(TestBootstrap.SPREADS[-1], RECOVERY)
+        assert 100.0 * (average / triangle - 1.0) == pytest.approx(9.0, abs=2.0)

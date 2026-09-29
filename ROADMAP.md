@@ -288,3 +288,19 @@ reached it. The two are now separate flows on the same day. And the guard agains
 projecting backwards sat after the year fraction, which refuses a backwards
 interval itself with a message about day counts; it now runs first and names the
 anchor.
+
+## Phase 11 — Default risk
+
+- [x] A survival curve as a piecewise-constant forward hazard rate, carrying the
+      recovery assumption it was stripped under
+- [x] Protection and premium legs in closed form on the union of the two curves'
+      pillars, with accrual on default computed rather than approximated by a
+      half-period
+- [x] Par spreads, upfront values and the risky annuity
+- [x] A sequential bootstrap from par spreads that reprices every quote it was
+      given
+- [x] Risky bond pricing, with recovery on face rather than on the remaining
+      cashflows
+- [x] The credit triangle implemented, and the size and shape of its error
+      measured rather than repeated
+- [x] A command-line entry point reading quoted spreads in basis points
