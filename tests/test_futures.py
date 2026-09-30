@@ -10,17 +10,19 @@ against itself passes whatever it says.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from tenor.bond import Accrual, Bond
 from tenor.calendar import Rolling
-from tenor.daycount import Basis
+from tenor.daycount import Basis, year_fraction
 from tenor.futures import (
     BadDelivery,
     BondFuture,
     conversion_factor,
+    delivery_basis,
+    implied_repo_rate,
     rounded_life,
 )
 from tenor.schedule import Frequency, add_months
@@ -321,3 +323,351 @@ def test_the_contract_names_itself_when_unlabelled() -> None:
     assert BondFuture(
         first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31), label="TYZ6"
     ).name == "TYZ6"
+
+
+# -- the cash and carry ------------------------------------------------------
+
+SETTLEMENT = date(2026, 11, 20)
+CONTRACT = BondFuture(
+    first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31), label="USZ6"
+)
+REPO = 0.042
+
+
+def test_net_basis_is_the_implied_repo_rate_expressed_as_a_price() -> None:
+    """The identity the two conventional definitions rest on.
+
+    ``net basis = (repo - implied repo) * financed balance``, exactly. Both
+    sides are computed from the same inputs by different routes -- one adds up
+    income and financing, the other divides a break-even -- so agreement to
+    machine precision is a statement about the definitions rather than about
+    floating point.
+    """
+    for coupon, maturity, price in (
+        (0.0175, date(2046, 8, 15), 61.9),
+        (0.0475, date(2046, 11, 15), 98.5),
+        (0.0625, date(2043, 5, 15), 119.4),
+        (0.0900, date(2039, 2, 15), 151.2),
+    ):
+        basis = delivery_basis(
+            deliverable(maturity, coupon),
+            CONTRACT,
+            clean_price=price,
+            futures_price=106.0,
+            settlement=SETTLEMENT,
+            repo=REPO,
+        )
+        assert basis.net_basis == pytest.approx(
+            (basis.repo - basis.implied_repo) * basis.financed_balance, rel=1e-12
+        )
+        assert basis.net_basis == pytest.approx(
+            basis.gross_basis - basis.carry, rel=1e-12, abs=1e-12
+        )
+        assert basis.net_basis == pytest.approx(
+            (basis.breakeven_futures_price - 106.0) * basis.conversion_factor,
+            rel=1e-12,
+        )
+
+
+def test_the_net_basis_is_zero_at_the_implied_repo_rate() -> None:
+    """The same identity from the other end, and the definition of the rate."""
+    bond = deliverable(date(2046, 11, 15), 0.0475)
+    first = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=98.5,
+        futures_price=114.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    again = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=98.5,
+        futures_price=114.0,
+        settlement=SETTLEMENT,
+        repo=first.implied_repo,
+    )
+    assert again.net_basis == pytest.approx(0.0, abs=1e-12)
+    assert again.implied_repo == pytest.approx(first.implied_repo, rel=1e-14)
+    # And the implied repo rate does not depend on the repo rate assumed, which
+    # the carry and the net basis both do.
+    assert first.gross_basis == pytest.approx(again.gross_basis, rel=1e-14)
+    assert first.carry != pytest.approx(again.carry)
+
+
+def test_a_coupon_inside_the_holding_period_is_received_and_reinvested() -> None:
+    """Two bonds, same everything, one paying a coupon before delivery.
+
+    The one that pays carries better by the coupon plus the interest it earns
+    from its own payment date, and finances a smaller balance because the coupon
+    comes back before the money is due.
+    """
+    inside = deliverable(date(2046, 12, 15), 0.05)
+    outside = deliverable(date(2047, 3, 15), 0.05)
+    paid = delivery_basis(
+        inside,
+        CONTRACT,
+        clean_price=100.0,
+        futures_price=100.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    unpaid = delivery_basis(
+        outside,
+        CONTRACT,
+        clean_price=100.0,
+        futures_price=100.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    assert [day for day, _ in paid.interim_coupons] == [date(2026, 12, 15)]
+    assert unpaid.interim_coupons == ()
+    coupon = paid.interim_coupons[0][1]
+    assert coupon == pytest.approx(2.5)
+
+    # The comparison has to be against this bond's own unrelieved balance, not
+    # against the other bond's. Two bonds with different coupon dates have
+    # different accrued interest at settlement -- 2.16 against 0.90 here -- and
+    # that difference is larger than the coupon relief, so the bond that pays a
+    # coupon inside the period finances the *bigger* balance of the two. A first
+    # attempt asserted the opposite and was measuring accrued interest.
+    stub = year_fraction(date(2026, 12, 15), CONTRACT.delivery, Basis.ACT_360)
+    assert paid.financed_balance == pytest.approx(
+        paid.dirty_price * paid.holding_period - coupon * stub, rel=1e-12
+    )
+    assert paid.financed_balance < paid.dirty_price * paid.holding_period
+    assert unpaid.financed_balance == pytest.approx(
+        unpaid.dirty_price * unpaid.holding_period, rel=1e-14
+    )
+    assert paid.dirty_price - 100.0 > unpaid.dirty_price - 100.0 + 1.0
+
+    # And carry moves the *other* way from the way a coupon receipt suggests,
+    # which is the finding here rather than an accident of the pair chosen.
+    # Coupon income over a fixed 41 days is the same 41 days of five per cent
+    # whenever the coupon lands -- 0.5613 against 0.5663, the gap being the
+    # day-count noise of measuring 41 days against two different period
+    # lengths. So what separates the two is the balance financed: the bond
+    # about to pay carries 2.158 of accrued interest into the trade against the
+    # other's 0.912, and the financing on that 1.247 difference is 0.00596,
+    # against the 0.00467 the received coupon earns back over its 16-day stub.
+    # Being close to a coupon date is a cost, not a benefit.
+    assert paid.carry < unpaid.carry
+    reinvestment = REPO * coupon * stub
+    financing_gap = REPO * (paid.dirty_price - unpaid.dirty_price) * paid.holding_period
+    income_gap = (
+        paid.accrued_at_delivery - (paid.dirty_price - 100.0) + coupon
+    ) - (unpaid.accrued_at_delivery - (unpaid.dirty_price - 100.0))
+    assert paid.carry - unpaid.carry == pytest.approx(
+        income_gap + reinvestment - financing_gap, rel=1e-12
+    )
+    assert reinvestment == pytest.approx(0.004667, abs=5e-7)
+    assert financing_gap == pytest.approx(0.005964, abs=5e-7)
+
+
+def test_the_redemption_never_reaches_the_interim_coupons() -> None:
+    """The guard, and the search for the case it rules out.
+
+    ``Bond`` bundles the final coupon into the redemption flow, so a bond
+    redeeming inside the holding period would contribute 102.5 to the coupons
+    received rather than 2.5 -- an error of two orders of magnitude, arriving as
+    a wildly negative net basis rather than as an exception. It cannot happen,
+    because a bond that has redeemed cannot be delivered, and this is the sweep
+    that looks for a counterexample: every maturity in the delivery month and
+    the two months around it, at a daily step.
+    """
+    for offset in range(-30, 75):
+        maturity = date(2026, 12, 1) + timedelta(days=offset)
+        if maturity <= CONTRACT.first_delivery:
+            continue
+        bond = deliverable(maturity, 0.05)
+        if maturity <= CONTRACT.delivery:
+            with pytest.raises(BadDelivery, match="has redeemed by then"):
+                delivery_basis(
+                    bond,
+                    CONTRACT,
+                    clean_price=100.0,
+                    futures_price=100.0,
+                    settlement=SETTLEMENT,
+                    repo=REPO,
+                )
+            continue
+        basis = delivery_basis(
+            bond,
+            CONTRACT,
+            clean_price=100.0,
+            futures_price=100.0,
+            settlement=SETTLEMENT,
+            repo=REPO,
+        )
+        for _, amount in basis.interim_coupons:
+            assert amount < 0.5 * bond.redemption
+
+
+def test_carry_is_income_less_financing_and_is_signed() -> None:
+    """A positive carry means the coupon beats the repo rate, which is the
+    normal state of a long bond, and a negative one means it does not.
+
+    The crossing is at a repo rate equal to the running yield, near enough: a
+    five per cent bond at par carries positively against 4.2% repo and
+    negatively against 6%.
+    """
+    bond = deliverable(date(2046, 11, 15), 0.05)
+    cheap = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=100.0,
+        futures_price=100.0,
+        settlement=SETTLEMENT,
+        repo=0.042,
+    )
+    dear = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=100.0,
+        futures_price=100.0,
+        settlement=SETTLEMENT,
+        repo=0.060,
+    )
+    assert cheap.carry > 0.0 > dear.carry
+    assert cheap.gross_basis == pytest.approx(dear.gross_basis, rel=1e-14)
+    assert dear.net_basis > cheap.net_basis
+
+
+def test_the_accrued_interest_grows_over_the_holding_period() -> None:
+    bond = deliverable(date(2046, 11, 15), 0.0475)
+    basis = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=98.5,
+        futures_price=114.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    assert basis.dirty_price == pytest.approx(98.5 + bond.accrued(SETTLEMENT))
+    assert basis.accrued_at_delivery > bond.accrued(SETTLEMENT)
+    assert basis.invoice_price == pytest.approx(
+        114.0 * basis.conversion_factor + basis.accrued_at_delivery
+    )
+    assert basis.holding_period == pytest.approx(41 / 360.0, rel=1e-14)
+
+
+def test_the_implied_repo_rate_is_solved_by_division_and_agrees_with_a_search() -> None:
+    """The closed form against a bisection on the break-even it comes from.
+
+    Worth doing once: the formula is a rearrangement, and a rearrangement is
+    exactly the kind of step that can be done backwards without any test
+    noticing. The bisection knows only the cash flows.
+    """
+    bond = deliverable(date(2046, 12, 15), 0.05)
+    basis = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=100.0,
+        futures_price=100.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    stubs = [
+        (year_fraction(day, CONTRACT.delivery, Basis.ACT_360), amount)
+        for day, amount in basis.interim_coupons
+    ]
+
+    def shortfall(rate: float) -> float:
+        cost = basis.dirty_price * (1.0 + rate * basis.holding_period)
+        proceeds = basis.invoice_price + sum(
+            amount * (1.0 + rate * stub) for stub, amount in stubs
+        )
+        return proceeds - cost
+
+    low, high = -5.0, 5.0
+    assert shortfall(low) * shortfall(high) < 0.0
+    for _ in range(200):
+        middle = 0.5 * (low + high)
+        if shortfall(low) * shortfall(middle) <= 0.0:
+            high = middle
+        else:
+            low = middle
+    assert basis.implied_repo == pytest.approx(0.5 * (low + high), rel=1e-11)
+
+
+def test_the_arithmetic_refuses_inputs_that_cannot_mean_anything() -> None:
+    bond = deliverable(date(2046, 11, 15), 0.0475)
+    with pytest.raises(BadDelivery, match="not positive, so the invoice"):
+        delivery_basis(
+            bond,
+            CONTRACT,
+            clean_price=98.5,
+            futures_price=0.0,
+            settlement=SETTLEMENT,
+            repo=REPO,
+        )
+    with pytest.raises(BadDelivery, match="not before delivery"):
+        delivery_basis(
+            bond,
+            CONTRACT,
+            clean_price=98.5,
+            futures_price=114.0,
+            settlement=date(2027, 1, 5),
+            repo=REPO,
+        )
+    with pytest.raises(BadDelivery, match="nothing to finance"):
+        implied_repo_rate(
+            dirty_price=0.0,
+            invoice_price=100.0,
+            interim_coupons=(),
+            holding_period=0.1,
+        )
+    with pytest.raises(BadDelivery, match="not positive; delivery must"):
+        implied_repo_rate(
+            dirty_price=100.0,
+            invoice_price=100.0,
+            interim_coupons=(),
+            holding_period=0.0,
+        )
+
+
+def test_a_financed_balance_of_nothing_is_refused_relatively() -> None:
+    """The guard is relative to the position, not against zero.
+
+    The balance vanishes only if the interim coupons weighted by their own
+    stubs match the whole dirty price weighted by the holding period, which
+    needs a coupon of the order of the price. A guard at an absolute tolerance
+    would either never fire or would fire on a legitimate short holding period,
+    where the balance is small in absolute terms and perfectly well determined.
+    """
+    with pytest.raises(BadDelivery, match="carry the whole holding cost"):
+        implied_repo_rate(
+            dirty_price=100.0,
+            invoice_price=100.0,
+            interim_coupons=((0.5, 20.0),),
+            holding_period=0.1,
+        )
+    # A balance of a ten-thousandth of a point is small and is not degenerate.
+    tiny = implied_repo_rate(
+        dirty_price=100.0,
+        invoice_price=100.02,
+        interim_coupons=(),
+        holding_period=1e-6,
+    )
+    assert tiny == pytest.approx(0.02 / (100.0 * 1e-6), rel=1e-12)
+
+
+def test_the_contract_method_and_the_function_are_the_same_call() -> None:
+    bond = deliverable(date(2046, 11, 15), 0.0475)
+    through_method = CONTRACT.basis_of(
+        bond,
+        clean_price=98.5,
+        futures_price=114.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    through_function = delivery_basis(
+        bond,
+        CONTRACT,
+        clean_price=98.5,
+        futures_price=114.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    assert through_method == through_function

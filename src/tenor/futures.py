@@ -19,22 +19,49 @@ discounting formula, and the test suite checks it against a bond built with this
 package's own schedule generator and priced at the notional yield, which is a
 genuinely separate code path rather than the same algebra spelled twice.
 
+**The implied repo rate is linear, so it is not solved.** The cash-and-carry
+break-even is an equation in the financing rate, and the financing rate appears
+once in the cost of carrying the bond and once in the reinvestment of any coupon
+that falls inside the holding period. Both are simple interest, so the equation
+is linear and :func:`implied_repo_rate` divides rather than iterating. Using the
+package's root finder here would be slower, less accurate and would invite the
+reader to think there is a fixed point where there is not.
+
+**Net basis and the implied repo rate are the same number twice.** Exactly::
+
+    net basis = (repo - implied repo) * financed balance
+
+where the financed balance is the dirty price accrued over the holding period,
+less each interim coupon accrued from its own payment date. That identity is
+asserted to machine precision in the tests, and it is the whole answer to the
+question of which definition of cheapest to deliver to use: ranking by lowest
+net basis and ranking by highest implied repo rate give the same order if and
+only if the financed balance is common to the basket, which it is not. A
+deep-discount long bond finances around half the balance of a high-coupon short
+one, so a price comparison and a rate comparison disagree by construction, and
+the disagreement is the spread of prices rather than anything about the bonds.
+
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
 from .bond import Bond
-from .daycount import Basis
+from .daycount import Basis, year_fraction
 from .schedule import add_months
 
 __all__ = [
     "BadDelivery",
     "BondFuture",
+    "DeliveryBasis",
     "RoundedLife",
     "conversion_factor",
+    "delivery_basis",
+    "implied_repo_rate",
     "rounded_life",
 ]
 
@@ -232,3 +259,225 @@ class BondFuture:
         coupon the short gives up is the coupon the bond pays.
         """
         return futures_price * self.conversion_factor(bond) + bond.accrued(self.delivery)
+
+    def basis_of(
+        self,
+        bond: Bond,
+        *,
+        clean_price: float,
+        futures_price: float,
+        settlement: date,
+        repo: float,
+    ) -> DeliveryBasis:
+        """The full cash-and-carry for one deliverable."""
+        return delivery_basis(
+            bond,
+            self,
+            clean_price=clean_price,
+            futures_price=futures_price,
+            settlement=settlement,
+            repo=repo,
+        )
+
+
+@dataclass(frozen=True)
+class DeliveryBasis:
+    """One deliverable's cash-and-carry, and the rate that makes it break even.
+
+    Every price here is per 100 of the bond's face, and every rate is a simple
+    interest rate on :attr:`BondFuture.money_basis`.
+    """
+
+    bond: Bond
+    conversion_factor: float
+    clean_price: float
+    dirty_price: float
+    accrued_at_delivery: float
+    #: Coupons paid strictly after settlement and no later than delivery.
+    interim_coupons: tuple[tuple[date, float], ...]
+    invoice_price: float
+    #: Year fraction from settlement to delivery on the money basis.
+    holding_period: float
+    #: ``dirty * holding period`` less each interim coupon over its own stub.
+    #: The balance the financing is charged on, and the factor that converts a
+    #: rate into a price.
+    financed_balance: float
+    #: Clean price less the futures price times the factor.
+    gross_basis: float
+    #: Coupon income and its reinvestment, less the cost of financing.
+    carry: float
+    #: ``gross_basis - carry``.
+    net_basis: float
+    repo: float
+    implied_repo: float
+    #: The futures price at which :attr:`net_basis` would be zero. Independent
+    #: of the quote, so this is the one criterion that survives not having one.
+    breakeven_futures_price: float
+
+    @property
+    def is_cheapest_at(self) -> float:
+        """Shorthand for the ranking quantity: the futures price it justifies."""
+        return self.breakeven_futures_price
+
+
+def _interim_coupons(
+    bond: Bond, settlement: date, delivery: date
+) -> tuple[tuple[date, float], ...]:
+    """Coupons paid in ``(settlement, delivery]``.
+
+    Half-open at the settlement end for the same reason
+    :meth:`~tenor.bond.Bond.cashflows` is: a coupon paid on the settlement date
+    belongs to the seller. Closed at the delivery end because a coupon paid on
+    the delivery date is paid to whoever still holds the bond that morning,
+    which is the short.
+
+    The redemption cannot appear here and is not filtered out. ``Bond`` bundles
+    the final coupon into the redemption flow, so a filter would have to take
+    the principal back off the amount, and subtracting something that is never
+    there reads as a case that has been handled. It is not a case: the caller
+    refuses a bond maturing on or before delivery, so every flow this sees is
+    strictly before the last one. :func:`delivery_basis` carries that guard and
+    the tests carry the search for a counterexample.
+    """
+    return tuple(
+        (flow.day, flow.amount)
+        for flow in bond.cashflows(settlement)
+        if settlement < flow.day <= delivery
+    )
+
+
+def implied_repo_rate(
+    *,
+    dirty_price: float,
+    invoice_price: float,
+    interim_coupons: Sequence[tuple[float, float]],
+    holding_period: float,
+) -> float:
+    """The financing rate at which buying and delivering breaks even.
+
+    Buy the bond dirty, finance it to delivery, collect any coupon that falls
+    inside and reinvest it to delivery at the same rate, deliver, receive the
+    invoice::
+
+        dirty * (1 + r * T) = invoice + sum C_i * (1 + r * T_i)
+
+    linear in ``r``, so::
+
+        r = (invoice + sum C_i - dirty) / (dirty * T - sum C_i * T_i)
+
+    ``interim_coupons`` is pairs of ``(year fraction from payment to delivery,
+    amount)``.
+
+    The denominator is the financed balance, and it is guarded relative to its
+    own leading term rather than against zero: it vanishes only if the interim
+    coupons weighted by their stubs match the whole dirty price weighted by the
+    holding period, which needs a coupon of the order of the price and is
+    therefore a malformed input rather than a small number.
+    """
+    if dirty_price <= 0.0:
+        raise BadDelivery(
+            f"a dirty price of {dirty_price!r} is not positive, so there is nothing "
+            "to finance"
+        )
+    if holding_period <= 0.0:
+        raise BadDelivery(
+            f"a holding period of {holding_period!r} is not positive; delivery must "
+            "be after settlement for a carry to exist"
+        )
+    scale = dirty_price * holding_period
+    balance = scale - math.fsum(
+        amount * stub for stub, amount in interim_coupons
+    )
+    if abs(balance) <= 1e-12 * scale:
+        raise BadDelivery(
+            f"the financed balance is {balance!r} against a position of {scale!r}: "
+            "the interim coupons carry the whole holding cost, so no financing rate "
+            "makes this trade break even"
+        )
+    proceeds = invoice_price + math.fsum(amount for _, amount in interim_coupons)
+    return (proceeds - dirty_price) / balance
+
+
+def delivery_basis(
+    bond: Bond,
+    future: BondFuture,
+    *,
+    clean_price: float,
+    futures_price: float,
+    settlement: date,
+    repo: float,
+) -> DeliveryBasis:
+    """Gross basis, carry, net basis and the implied repo rate for one bond.
+
+    Carry is coupon income less the cost of financing the position, both over
+    the holding period: accrued interest earned, plus any coupon actually paid
+    inside the period, plus the simple interest that coupon earns from its
+    payment date to delivery, less simple interest on the dirty price.
+
+    Net basis is gross basis less carry, and it is also
+    ``(repo - implied repo) * financed balance``. The two routes agree to
+    machine precision and the tests check that they do, which is worth more
+    than either on its own: the identity is the statement that the implied repo
+    rate and the net basis are one number expressed twice, and a sign error in
+    either definition breaks it.
+    """
+    if futures_price <= 0.0:
+        raise BadDelivery(
+            f"a futures price of {futures_price!r} is not positive, so the invoice "
+            "it implies is not a price"
+        )
+    if settlement >= future.delivery:
+        raise BadDelivery(
+            f"settlement on {settlement.isoformat()} is not before delivery on "
+            f"{future.delivery.isoformat()}"
+        )
+    if bond.maturity <= future.delivery:
+        # Not a redundant guard. The conversion factor only needs the bond to
+        # outlive the *first* day of the delivery month, and the short picks the
+        # delivery day inside it, so a bond maturing on the 15th has a perfectly
+        # good factor and cannot be delivered on the 31st. Refusing it here is
+        # also what makes the interim coupons safe to take at face value.
+        raise BadDelivery(
+            f"{bond.name} matures on {bond.maturity.isoformat()}, on or before "
+            f"delivery on {future.delivery.isoformat()}; it has redeemed by then"
+        )
+    factor = future.conversion_factor(bond)
+    accrued_now = bond.accrued(settlement)
+    accrued_then = bond.accrued(future.delivery)
+    dirty = clean_price + accrued_now
+    coupons = _interim_coupons(bond, settlement, future.delivery)
+    stubs = tuple(
+        (year_fraction(day, future.delivery, future.money_basis), amount)
+        for day, amount in coupons
+    )
+    holding = year_fraction(settlement, future.delivery, future.money_basis)
+    invoice = futures_price * factor + accrued_then
+    balance = dirty * holding - math.fsum(amount * stub for stub, amount in stubs)
+
+    paid = math.fsum(amount for _, amount in coupons)
+    reinvestment = repo * math.fsum(amount * stub for stub, amount in stubs)
+    financing = repo * dirty * holding
+    carry = (accrued_then - accrued_now) + paid + reinvestment - financing
+    gross = clean_price - futures_price * factor
+    return DeliveryBasis(
+        bond=bond,
+        conversion_factor=factor,
+        clean_price=clean_price,
+        dirty_price=dirty,
+        accrued_at_delivery=accrued_then,
+        interim_coupons=coupons,
+        invoice_price=invoice,
+        holding_period=holding,
+        financed_balance=balance,
+        gross_basis=gross,
+        carry=carry,
+        net_basis=gross - carry,
+        repo=repo,
+        implied_repo=implied_repo_rate(
+            dirty_price=dirty,
+            invoice_price=invoice,
+            interim_coupons=stubs,
+            holding_period=holding,
+        ),
+        breakeven_futures_price=(clean_price - carry) / factor,
+    )
