@@ -195,7 +195,9 @@ def test_at_the_notional_coupon_the_factor_ignores_the_maturity() -> None:
     assert off[0] - off[1] > 0.2
 
 
-@pytest.mark.parametrize("coupon", [0.0, 0.00625, 0.0125, 0.02, 0.03, 0.045, 0.06, 0.0775, 0.09, 0.125])
+@pytest.mark.parametrize(
+    "coupon", [0.0, 0.00625, 0.0125, 0.02, 0.03, 0.045, 0.06, 0.0775, 0.09, 0.125]
+)
 @pytest.mark.parametrize(
     "maturity",
     [
