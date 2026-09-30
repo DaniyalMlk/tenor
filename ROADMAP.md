@@ -304,3 +304,54 @@ anchor.
 - [x] The credit triangle implemented, and the size and shape of its error
       measured rather than repeated
 - [x] A command-line entry point reading quoted spreads in basis points
+
+## Phase 12 — Deliverable bond futures
+
+- [x] Conversion factors on the exchange convention, with the remaining life
+      rounded down to a whole quarter, checked against pricing the rounded bond
+      through the package's own schedule generator rather than against the same
+      algebra written twice
+- [x] Gross basis, carry and net basis for a cash-and-carry, with the coupons
+      that fall inside the holding period received and reinvested rather than
+      assumed away
+- [x] The implied repo rate in closed form, because the break-even is linear in
+      the financing rate, checked against a bisection on the cash flows
+- [x] Cheapest to deliver by all three of the conventional criteria, with
+      whether they agree reported rather than assumed
+- [x] The delivery switch walked across a flat yield, described and deliberately
+      not valued
+- [x] The contract's own sensitivity: the deliverable's, divided by the factor
+- [x] A command-line entry point taking a basket file and a quote
+
+The measurement that changed the design. The expectation going in was that the
+implied repo rate and the net basis would rank a basket differently, because a
+deep-discount long bond finances around half the balance of a high-coupon short
+one. That is backwards. The three criteria rank on the same gap between a bond's
+break-even futures price and the quote, scaled by one, by the conversion factor,
+and by the factor over the financed balance — and the factor over the balance
+barely moves, because the balance is nearly the dirty price and the dirty price
+is nearly the factor times the futures price, so the factor cancels. On the
+four-bond basket the factors span a ratio of 2.00 and that scaling spans 4.65%.
+
+It is the net basis that is in a different unit, points per 100 of the bond's own
+face rather than per contract, and it takes a quote 5.00 points — 4.20% — from
+the basket-implied price before it names a different bond. The module docstring
+said the opposite before it was measured, which is the second time a plausible
+claim in this package has turned out to be reversed.
+
+Two defects the tests found, both in the tests rather than in the code. A bond
+paying a coupon inside the holding period was asserted to carry better; it
+carries worse, because income over a fixed 41 days is the same 41 days of coupon
+whenever it lands, so what separates two such bonds is the accrued interest they
+finance — 2.158 against 0.912, costing 0.00596 against the 0.00467 the coupon
+earns back. And the walk searching for the point where the rankings split was
+bounded one hundredth of a point short of the split, so it found nothing and read
+as agreement.
+
+One guard removed rather than kept. `Bond` bundles the final coupon into the
+redemption flow, so a bond redeeming inside the holding period would contribute
+102.5 to the coupons received rather than 2.5. Subtracting the principal back off
+would handle a case that cannot arise: such a bond has redeemed before delivery
+and is refused. The refusal is the proof, and the test sweeps every maturity for
+a month either side of the delivery month at a daily step looking for the
+counterexample.
