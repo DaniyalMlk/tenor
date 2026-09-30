@@ -58,6 +58,15 @@ points of arbitrage and the question is academic. So comparing raw net bases
 across a basket does compare quantities in different units, and gets away with
 it because a liquid contract never trades five points from fair.
 
+**The delivery option is described, not valued.** :func:`delivery_switch` walks
+a parallel yield shift and reports which bond is cheapest at each level, which
+is where the option's payoff comes from: at the notional yield every conversion
+factor is fair and the basket is indifferent, and away from it the ranking is by
+duration, so the cheapest bond switches from the shortest to the longest as
+yields rise through the notional coupon. Putting a *value* on that switch needs
+a model of how the curve moves, which this package does not have, so this module
+does not pretend to one.
+
 """
 
 from __future__ import annotations
@@ -77,9 +86,12 @@ __all__ = [
     "CheapestToDeliver",
     "DeliveryBasis",
     "RoundedLife",
+    "SwitchLevel",
     "cheapest_to_deliver",
     "conversion_factor",
     "delivery_basis",
+    "delivery_switch",
+    "futures_dv01",
     "implied_repo_rate",
     "rounded_life",
 ]
@@ -585,3 +597,103 @@ def cheapest_to_deliver(
         by_futures_price=by_price,
         unanimous=len(names) == 1,
     )
+
+
+@dataclass(frozen=True)
+class SwitchLevel:
+    """Which bond is cheapest at one yield level.
+
+    Attributes:
+        yield_level: The flat yield every bond in the basket was priced at.
+        cheapest: Its name.
+        futures_price: The price that bond justifies.
+        runner_up: The next cheapest, or the same name for a basket of one.
+        margin: How much cheaper, in price points. Zero at the notional
+            coupon, where the factors are fair and the basket is indifferent.
+    """
+
+    yield_level: float
+    cheapest: str
+    futures_price: float
+    runner_up: str
+    margin: float
+
+
+def delivery_switch(
+    basket: Sequence[Bond],
+    future: BondFuture,
+    *,
+    settlement: date,
+    repo: float,
+    yields: Sequence[float],
+) -> tuple[SwitchLevel, ...]:
+    """Walk a flat yield across the basket and report the cheapest at each level.
+
+    Each bond is priced at the same yield, which is the point: the conversion
+    factors were computed at the notional coupon, so at that yield every bond's
+    price over its factor is the same number and the basket is exactly
+    indifferent. Away from it the ranking is by duration, because price over
+    factor falls fastest for the bond with the most of it. So the cheapest bond
+    is the shortest in the basket below the notional coupon and the longest
+    above it, and the switch is at the notional coupon rather than anywhere the
+    market chose.
+
+    This is the geometry of the short's option, not its value. Valuing it needs
+    a model of how the curve moves between now and delivery, and a flat yield
+    walked in parallel is not one -- it says nothing about the probability of
+    arriving anywhere on it. The margin column is what the option is worth
+    *conditional* on landing there, which is the most this can honestly say.
+    """
+    if not basket:
+        raise BadDelivery("an empty basket has no cheapest bond")
+    levels: list[SwitchLevel] = []
+    for level in yields:
+        ranked = sorted(
+            (
+                delivery_basis(
+                    bond,
+                    future,
+                    clean_price=bond.clean_price(level, settlement),
+                    # Any positive quote serves: the break-even futures price
+                    # this ranks on does not depend on it, and the constructor
+                    # refuses a non-positive one.
+                    futures_price=100.0,
+                    settlement=settlement,
+                    repo=repo,
+                )
+                for bond in basket
+            ),
+            key=lambda one: one.breakeven_futures_price,
+        )
+        best = ranked[0]
+        next_best = ranked[1] if len(ranked) > 1 else best
+        levels.append(
+            SwitchLevel(
+                yield_level=level,
+                cheapest=best.bond.name,
+                futures_price=best.breakeven_futures_price,
+                runner_up=next_best.bond.name,
+                margin=next_best.breakeven_futures_price
+                - best.breakeven_futures_price,
+            )
+        )
+    return tuple(levels)
+
+
+def futures_dv01(
+    basis: DeliveryBasis, *, settlement: date, yield_level: float, shift: float = 1e-4
+) -> float:
+    """The contract's sensitivity: the cheapest bond's, over the factor.
+
+    A one basis point move in the deliverable's yield moves its price by its
+    own pv01 and the futures price by that over the conversion factor, because
+    the invoice divides by the factor. A factor below one therefore *raises*
+    the contract's sensitivity above the bond's, which is the opposite of the
+    intuition that a factor scales risk down.
+
+    Holding the cheapest bond fixed is the approximation, and it is the same
+    approximation the number is used under: it is the hedge ratio for a small
+    move, and a move large enough to change the cheapest bond is a move this
+    does not describe.
+    """
+    return basis.bond.pv01(yield_level, settlement, shift=shift) / basis.conversion_factor

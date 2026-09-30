@@ -23,6 +23,8 @@ from tenor.futures import (
     cheapest_to_deliver,
     conversion_factor,
     delivery_basis,
+    delivery_switch,
+    futures_dv01,
     implied_repo_rate,
     rounded_life,
 )
@@ -895,3 +897,178 @@ def test_a_basket_and_its_quotes_have_to_line_up() -> None:
             settlement=SETTLEMENT,
             repo=REPO,
         )
+
+
+# -- the switch --------------------------------------------------------------
+
+
+def switch_yield(basket: list[Bond], future: BondFuture, repo: float) -> float:
+    """Bisect for the yield at which the cheapest bond changes."""
+    low, high = 0.01, 0.15
+
+    def cheapest(level: float) -> str:
+        return delivery_switch(
+            basket, future, settlement=SETTLEMENT, repo=repo, yields=[level]
+        )[0].cheapest
+
+    below = cheapest(low)
+    assert cheapest(high) != below, "the basket does not switch over this range"
+    for _ in range(200):
+        middle = 0.5 * (low + high)
+        if cheapest(middle) == below:
+            low = middle
+        else:
+            high = middle
+    return 0.5 * (low + high)
+
+
+def whole_year_pair() -> list[Bond]:
+    """Two notional-coupon bonds, both maturing a whole number of years out.
+
+    Whole years from the first delivery day make the rounding convention a
+    no-op, so each conversion factor is the exact price of the actual bond. It
+    also forces both coupon schedules onto the same months, so accrued interest,
+    dirty price and therefore carry per unit of factor are common to the pair.
+    Those are the conditions under which the switch should be exactly at the
+    notional coupon, and separating them from the general case is the point of
+    having this pair alongside the odd-maturity one.
+    """
+    return [
+        deliverable(date(2032, 12, 1), 0.06, label="short"),
+        deliverable(date(2056, 12, 1), 0.06, label="long"),
+    ]
+
+
+@pytest.mark.parametrize("repo", [0.0, 0.042, 0.09])
+@pytest.mark.parametrize("digits", [None, 4])
+def test_the_switch_is_exactly_at_the_notional_coupon_when_the_factors_are_exact(
+    repo: float, digits: int | None
+) -> None:
+    """Six decimal places, and neither carry nor the published rounding moves it.
+
+    The conversion factors were computed at the notional coupon, so at that
+    yield every bond's price over its factor is the same number and the basket
+    is exactly indifferent. Above it the longest bond is cheapest and below it
+    the shortest, because price over factor falls fastest where there is most
+    duration. The exchange did not choose where the switch is; the notional
+    coupon did.
+    """
+    future = BondFuture(
+        first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31), digits=digits
+    )
+    assert switch_yield(whole_year_pair(), future, repo) == pytest.approx(
+        0.06, abs=1e-8
+    )
+
+
+def test_below_the_notional_coupon_the_short_bond_is_cheapest_and_above_it_the_long() -> None:
+    future = BondFuture(first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31))
+    levels = delivery_switch(
+        whole_year_pair(),
+        future,
+        settlement=SETTLEMENT,
+        repo=REPO,
+        yields=[0.02, 0.04, 0.055, 0.065, 0.08, 0.10],
+    )
+    assert [one.cheapest for one in levels] == [
+        "short",
+        "short",
+        "short",
+        "long",
+        "long",
+        "long",
+    ]
+    # The margin is what the short's choice is worth conditional on landing
+    # there, and it widens with distance from the notional coupon in both
+    # directions.
+    below = [one.margin for one in levels[:3]]
+    above = [one.margin for one in levels[3:]]
+    assert below == sorted(below, reverse=True)
+    assert above == sorted(above)
+    assert min(below + above) > 0.0
+
+
+def test_at_the_notional_coupon_the_basket_is_indifferent() -> None:
+    future = BondFuture(first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31))
+    level = delivery_switch(
+        whole_year_pair(), future, settlement=SETTLEMENT, repo=REPO, yields=[0.06]
+    )[0]
+    assert level.margin == pytest.approx(0.0, abs=1e-9)
+    assert level.cheapest != level.runner_up
+
+
+def test_the_rounding_convention_displaces_the_switch_by_a_tenth_of_a_basis_point() -> None:
+    """The general case, measured rather than waved away.
+
+    Real maturities do not land on whole years from the first delivery day, so
+    the factor is the price of a bond up to a quarter shorter than the one being
+    delivered and the indifference point moves. On a 2033/2056 pair it moves to
+    6.0011% with exact factors and no carry. Carry and the published
+    four-decimal factor then pull it back rather than further out -- to 6.0003%
+    and 6.0002% -- which is a coincidence of this pair and not a rule, so the
+    assertion is on the numbers and the ordering is left alone.
+    """
+    odd = [
+        deliverable(date(2033, 2, 15), 0.06, label="short"),
+        deliverable(date(2056, 11, 15), 0.06, label="long"),
+    ]
+    exact_factors = BondFuture(
+        first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31), digits=None
+    )
+    published = BondFuture(
+        first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31), digits=4
+    )
+    assert switch_yield(odd, exact_factors, 0.0) == pytest.approx(0.06001127, abs=5e-8)
+    assert switch_yield(odd, exact_factors, REPO) == pytest.approx(0.06000313, abs=5e-8)
+    assert switch_yield(odd, published, REPO) == pytest.approx(0.06000189, abs=5e-8)
+    # A tenth of a basis point either way. Worth knowing it is not zero, and
+    # worth knowing it is not a basis point.
+    assert abs(switch_yield(odd, published, REPO) - 0.06) < 2e-6
+
+
+def test_a_switch_walk_needs_a_basket() -> None:
+    future = BondFuture(first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31))
+    with pytest.raises(BadDelivery, match="empty basket"):
+        delivery_switch(
+            [], future, settlement=SETTLEMENT, repo=REPO, yields=[0.05]
+        )
+
+
+def test_a_basket_of_one_never_switches_and_reports_itself_as_runner_up() -> None:
+    future = BondFuture(first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31))
+    level = delivery_switch(
+        [deliverable(date(2046, 11, 15), 0.0475, label="alone")],
+        future,
+        settlement=SETTLEMENT,
+        repo=REPO,
+        yields=[0.045],
+    )[0]
+    assert level.cheapest == level.runner_up == "alone"
+    assert level.margin == 0.0
+
+
+def test_the_contract_dv01_is_the_bond_dv01_over_the_factor() -> None:
+    """And a factor below one *raises* it, which is the wrong way round from
+    the intuition that a conversion factor scales risk down.
+
+    The invoice divides by the factor, so a bond whose factor is 0.5153 moves
+    the futures price nearly twice as far as it moves itself. Hedging a bond
+    position with the contract at a ratio of one to one, on the grounds that the
+    factor is less than one and therefore conservative, is under-hedging by that
+    whole ratio.
+    """
+    future = BondFuture(first_delivery=date(2026, 12, 1), delivery=date(2026, 12, 31))
+    bond = deliverable(date(2046, 8, 15), 0.0175, label="1.750% of 2046")
+    basis = delivery_basis(
+        bond,
+        future,
+        clean_price=bond.clean_price(0.0455, SETTLEMENT),
+        futures_price=118.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    contract = futures_dv01(basis, settlement=SETTLEMENT, yield_level=0.0455)
+    own = bond.pv01(0.0455, SETTLEMENT)
+    assert basis.conversion_factor < 1.0
+    assert contract == pytest.approx(own / basis.conversion_factor, rel=1e-14)
+    assert abs(contract) > abs(own) * 1.9
