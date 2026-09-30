@@ -782,3 +782,217 @@ def test_credit_refuses_out_of_order_maturities(quote_file: str, tmp_path: Path)
     path = tmp_path / "unsorted.txt"
     path.write_text("2026-01-05, 120\n2022-01-05, 60\n")
     assert main(["credit", *shared(quote_file), "--spreads", str(path)]) == 2
+
+
+# -- futures -----------------------------------------------------------------
+
+BASKET = """
+# maturity, coupon (decimal), clean price, label
+2046-08-15,  0.0175,   63.782,  1.750% of 2046
+2046-11-15,  0.0300,   79.795,  3.000% of 2046
+2047-02-15,  0.0450,   99.337,  4.500% of 2047
+2047-05-15,  0.0625,  122.497,  6.250% of 2047
+"""
+
+
+@pytest.fixture
+def basket_file(tmp_path: Path) -> str:
+    path = tmp_path / "basket.txt"
+    path.write_text(BASKET)
+    return str(path)
+
+
+def futures_arguments(basket: str) -> list[str]:
+    return [
+        "futures",
+        basket,
+        "--settlement",
+        "2026-11-20",
+        "--first-delivery",
+        "2026-12-01",
+        "--delivery",
+        "2026-12-31",
+        "--price",
+        "118.75",
+        "--repo",
+        "0.042",
+    ]
+
+
+def test_futures_needs_no_curve(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one command with no quote file, because it reads no curve.
+
+    Worth a test of its own: every other subcommand requires ``--reference`` and
+    ``--basis``, and the temptation when adding this one was to take them for
+    consistency and ignore them.
+    """
+    assert main(["--json", *futures_arguments(basket_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["settlement"] == "2026-11-20"
+    assert payload["notional_coupon"] == 0.06
+    assert len(payload["deliverables"]) == 4
+
+
+def test_futures_reports_every_identity_beside_the_numbers(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *futures_arguments(basket_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    for entry in payload["deliverables"]:
+        assert entry["net_basis"] == pytest.approx(
+            entry["gross_basis"] - entry["carry"], rel=1e-10, abs=1e-12
+        )
+        assert entry["net_basis"] == pytest.approx(
+            (0.042 - entry["implied_repo"]) * entry["financed_balance"], rel=1e-9
+        )
+        assert entry["net_basis"] == pytest.approx(
+            (entry["breakeven_futures_price"] - 118.75) * entry["conversion_factor"],
+            rel=1e-9,
+        )
+
+
+def test_futures_names_the_cheapest_bond_and_the_price_the_basket_justifies(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *futures_arguments(basket_file)]) == 0
+    verdict = json.loads(capsys.readouterr().out)["cheapest_to_deliver"]
+    assert verdict["unanimous"] is True
+    assert verdict["by_net_basis"] == "6.250% of 2047"
+    assert verdict["by_implied_repo"] == verdict["by_futures_price"] == "6.250% of 2047"
+    # The quote is below the price the basket justifies, which is the delivery
+    # option being paid for rather than an arbitrage.
+    assert verdict["quote_less_implied"] < 0.0
+    assert verdict["implied_futures_price"] == pytest.approx(118.93, abs=0.01)
+
+
+def test_futures_walks_the_switch_when_asked(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "--json",
+                *futures_arguments(basket_file),
+                "--switch",
+                "0.03",
+                "0.045",
+                "0.075",
+                "0.09",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    levels = payload["switch"]["levels"]
+    assert [one["cheapest"] for one in levels] == [
+        "6.250% of 2047",
+        "6.250% of 2047",
+        "1.750% of 2046",
+        "1.750% of 2046",
+    ]
+    # And the output says the switch was priced off a flat yield, not off the
+    # quotes in the basket file, because those two sets of prices are both in
+    # the same payload.
+    assert "flat yield" in payload["switch"]["priced_at"]
+    assert all(one["margin"] > 0.0 for one in levels)
+
+
+def test_futures_omits_the_switch_by_default(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *futures_arguments(basket_file)]) == 0
+    assert "switch" not in json.loads(capsys.readouterr().out)
+
+
+def test_futures_refuses_a_basket_of_percentages(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The error that does not raise on its own.
+
+    A basket quoting coupons as 4.75 rather than 0.0475 parses perfectly and
+    produces conversion factors a hundred times too large, so the refusal has to
+    be explicit and has to say which form is wanted.
+    """
+    path = tmp_path / "percent.txt"
+    path.write_text("2047-02-15, 4.50, 99.337, wrong units\n")
+    assert main(futures_arguments(str(path))) == 2
+    assert "percentage, not a decimal" in capsys.readouterr().err
+
+
+def test_futures_names_the_line_of_a_malformed_basket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bad.txt"
+    path.write_text("2046-08-15, 0.0175, 63.782\n2047-02-15, 0.0450\n")
+    assert main(futures_arguments(str(path))) == 2
+    assert "line 2" in capsys.readouterr().err
+
+    path.write_text("not-a-date, 0.0175, 63.782\n")
+    assert main(futures_arguments(str(path))) == 2
+    assert "is not an ISO date" in capsys.readouterr().err
+
+    path.write_text("2046-08-15, x, y\n")
+    assert main(futures_arguments(str(path))) == 2
+    assert "are not both numbers" in capsys.readouterr().err
+
+    path.write_text("# nothing but a comment\n")
+    assert main(futures_arguments(str(path))) == 2
+    assert "no deliverable bonds" in capsys.readouterr().err
+
+
+def test_futures_takes_a_whitespace_basket_and_an_unlabelled_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "plain.txt"
+    path.write_text("2046-08-15  0.0175  63.782\n2047-05-15  0.0625  122.497\n")
+    assert main(["--json", *futures_arguments(str(path))]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    # With no label the bond names itself from its coupon and maturity.
+    assert payload["deliverables"][0]["bond"] == "1.750% of 2046-08-15"
+
+
+def test_futures_refuses_a_bond_that_has_redeemed_by_delivery(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "expiring.txt"
+    path.write_text("2026-12-15, 0.05, 100.0, redeems mid-month\n")
+    assert main(futures_arguments(str(path))) == 2
+    assert "has redeemed by then" in capsys.readouterr().err
+
+
+def test_the_text_report_renders_a_nested_block_rather_than_a_dict(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The formatter used to fall through to ``str`` on a nested mapping.
+
+    Which printed the whole block on one line with braces and quotes in it. The
+    ``credit`` command's bond block had the same shape and the same problem.
+    """
+    assert main(futures_arguments(basket_file)) == 0
+    text = capsys.readouterr().out
+    assert "cheapest_to_deliver:\n  by_implied_repo: 6.250% of 2047" in text
+    assert "{" not in text
+    assert "'by_net_basis'" not in text
+
+
+def test_the_text_report_renders_the_credit_bond_block_too(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "credit",
+                *shared(quote_file),
+                "--spreads",
+                spread_file,
+                "--bond-maturity",
+                "2026-01-05",
+            ]
+        )
+        == 0
+    )
+    text = capsys.readouterr().out
+    assert "bond:\n  maturity: 2026-01-05" in text
+    assert "'risky_price'" not in text
