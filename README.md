@@ -885,11 +885,169 @@ the forward is half as much again as the average, and a reader seeing the
 forward beside the triangle would conclude the rule of thumb is wildly wrong
 when it is out by nine per cent. Both are printed, labelled.
 
+## Deliverable bond futures, and why the switch is at six per cent
+
+A short-term interest rate future here is a *rate* contract: one accrual period,
+cash settled, nothing for either side to choose. A deliverable bond future is a
+different instrument. The short hands over an actual bond from a published
+basket, picks which one and picks when inside the delivery month, and the
+contract normalises those choices with a **conversion factor** — the price of
+that bond, per unit of face, at a notional yield the exchange fixes and the
+market then moves away from.
+
+```
+$ tenor futures examples/basket.txt --settlement 2026-11-20 \
+      --first-delivery 2026-12-01 --delivery 2026-12-31 \
+      --price 118.75 --repo 0.042 --switch 0.045 0.06 0.075
+deliverables:
+  bond=1.750% of 2046  conversion_factor=0.5153  gross_basis=2.590125  carry=-0.1123241831  net_basis=2.702449183  implied_repo=-0.3273588363  breakeven_futures_price=123.9944191
+  bond=3.000% of 2046  conversion_factor=0.6555  gross_basis=1.954375  carry=-0.04210528223  net_basis=1.996480282  implied_repo=-0.177574815  breakeven_futures_price=121.7957365
+  bond=4.500% of 2047  conversion_factor=0.8266  gross_basis=1.17825  carry=0.02052300308  net_basis=1.157726997  implied_repo=-0.05912505087  breakeven_futures_price=120.1505892
+  bond=6.250% of 2047  conversion_factor=1.029  gross_basis=0.30325  carry=0.121516019  net_basis=0.181733981  implied_repo=0.02898262597  breakeven_futures_price=118.9266122
+(the invoice price, accrued interest, financed balance and interim coupon columns
+are omitted here; the command prints them, and `--json` is the machine form)
+cheapest_to_deliver:
+  by_implied_repo: 6.250% of 2047
+  by_net_basis: 6.250% of 2047
+  by_futures_price: 6.250% of 2047
+  unanimous: True
+  implied_futures_price: 118.9266122
+  quote_less_implied: -0.1766122265
+```
+
+It is the only subcommand that takes no curve. The whole calculation is the
+bond's quoted price, its conversion factor and a money-market financing rate,
+and asking for a file of swap quotes to compute it would be asking for something
+it does not read.
+
+### The conversion factor is a bond price, so it is checked by pricing a bond
+
+The exchange formula is five lines of algebra, and a formula transcribed once and
+asserted against itself passes whatever it happens to say. So the suite reaches
+the same number a second way: it builds the *rounded* bond with this package's
+own schedule generator, prices it at the notional yield, and compares. Eighty
+cases, all four stub lengths, coupons from zero to 12.5% — worst disagreement
+1.8e-15.
+
+Two facts worth having as tests rather than as comments came out of it. A bond
+paying exactly the notional coupon with a whole number of years to run has a
+factor of exactly one, which is the check the formula's shape is easiest to fail.
+And at exactly the notional coupon the discount factor to the rounded maturity
+cancels out of the formula, so the factor stops depending on the maturity at all
+— a six per cent bond with a three-month stub has the same factor at three years
+as at twenty-nine, and 0.999889 rather than 1.0, which is the rounding convention
+showing through and not an error. A basis point off the notional coupon, the
+maturity matters again and matters strongly.
+
+### Net basis and the implied repo rate are one number written twice
+
+Exactly:
+
+```
+net basis = (repo - implied repo) * financed balance
+```
+
+where the financed balance is the dirty price over the holding period less each
+interim coupon over its own stub. Both sides are computed by different routes —
+one adds up income and financing, the other divides a break-even — and they agree
+to 1e-12, which is a statement about the definitions rather than about floating
+point. The same identity through the third convention,
+`net basis = (break-even futures price - quote) * conversion factor`, holds to
+the same precision.
+
+The implied repo rate is not solved for. The cash-and-carry break-even is linear
+in the financing rate, which appears once in the cost of carrying the bond and
+once in the reinvestment of any coupon falling inside the holding period, both as
+simple interest. So it divides. The suite checks the rearrangement against a
+bisection on the cash flows themselves, because a rearrangement is exactly the
+kind of step that can be done backwards without any test noticing.
+
+### The criterion that disagrees is not the one you would expect
+
+Three conventions name the cheapest bond: the highest implied repo rate, the
+lowest net basis, and the lowest futures price a bond can justify. All three rank
+on the same gap between a bond's break-even price and the quote, scaled by one,
+by the conversion factor, and by the factor over the financed balance.
+
+The natural expectation is that the rate and the price part company, because a
+deep-discount long bond finances around half the balance of a high-coupon short
+one. Measured on the four-bond basket above, that is backwards. The conversion
+factors span a ratio of **2.00**; the factor *over* the balance spans **4.65%**,
+because the balance is nearly the dirty price and the dirty price is nearly the
+factor times the futures price, so the factor cancels. The rate and the price
+rank a basket alike.
+
+It is the **net basis** that is on its own scale — points per 100 of *the bond's*
+face rather than per contract. Walking the quote down from the basket-implied
+price, it takes **5.00 points, or 4.20%,** before the net-basis ranking picks a
+different bond from the other two, and by then every deliverable shows several
+points of arbitrage. So comparing raw net bases across a basket does compare
+quantities in different units, and gets away with it because a liquid contract
+never trades five points from fair. Dividing the net basis by the conversion
+factor recovers the price criterion exactly.
+
+### Being close to a coupon date is a cost, not a benefit
+
+Two bonds, same coupon, one paying inside the holding period and one not. The
+one that pays looks better: a coupon in hand, reinvested to delivery. It carries
+worse.
+
+Coupon income over a fixed 41 days is the same 41 days of coupon whenever it
+lands — 0.5613 against 0.5663 here, the gap being the day-count noise of
+measuring 41 days against two different period lengths. What separates the two is
+the balance financed, and the bond about to pay carries 2.158 of accrued interest
+into the trade against the other's 0.912. Financing that 1.247 difference costs
+0.00596; the received coupon earns 0.00467 back over its 16-day stub. The test
+that found this asserted the opposite twice before it was a measurement.
+
+### The switch is at the notional coupon, to six decimal places
+
+The factors were computed at the notional coupon, so at that yield every bond's
+price over its factor is the same number and the basket is exactly indifferent.
+Away from it the ranking is by duration, because price over factor falls fastest
+where there is most of it. So the cheapest bond is the shortest in the basket
+below the notional coupon and the longest above it, and the exchange did not
+choose where that happens — the notional coupon did.
+
+Measured on a pair of notional-coupon bonds maturing a whole number of years from
+the first delivery day, which makes the rounding convention a no-op and forces
+both coupon schedules onto the same months, the crossing is at **6.000000%**, and
+neither the repo rate nor rounding the factor to four decimals moves it. With
+real odd maturities the rounding convention displaces it: 6.0011% with exact
+factors and no carry, pulled back to 6.0002% once carry and the published factor
+are included — which is a coincidence of that pair and is stated as one.
+
+The switch is described and not valued. The margin column is what the short's
+choice is worth *conditional* on arriving at a level, and a parallel walk says
+nothing about the chance of arriving anywhere, so a number called the value of
+the delivery option would need a model of how the curve moves. This package does
+not have one and does not pretend to.
+
+### A conversion factor below one raises the contract's risk
+
+`futures_dv01` divides the deliverable's pv01 by the conversion factor, because
+the invoice divides by it. So a bond with a factor of 0.5153 moves the futures
+price nearly twice as far as it moves itself. Hedging a bond position one for one
+with the contract, on the grounds that a factor below one is conservative,
+under-hedges by that whole ratio.
+
+### A bond that has redeemed cannot be delivered
+
+The conversion factor only needs the bond to outlive the *first* day of the
+delivery month, so a bond maturing on the 15th has a perfectly good factor and
+cannot be handed over on the 31st. That bond is refused rather than priced — and
+the guard is load-bearing, because `Bond` bundles the final coupon into the
+redemption flow, so such a bond would contribute 102.5 to the coupons received
+inside the holding period rather than 2.5. Nothing subtracts the principal back
+off: a subtraction that can never fire reads as a case somebody handled. The test
+sweeps every maturity for a month either side of the delivery month at a daily
+step, looking for the counterexample.
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 490 tests
+pytest          # 983 tests
 mypy --strict
 ruff check .
 ```

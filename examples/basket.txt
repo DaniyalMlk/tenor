@@ -1,0 +1,6 @@
+# A long-bond delivery basket: maturity, coupon (decimal), clean price, label
+# Prices are consistent with a flat 4.55% yield on 2026-11-20.
+2046-08-15,  0.0175,   63.782,  1.750% of 2046
+2046-11-15,  0.0300,   79.795,  3.000% of 2046
+2047-02-15,  0.0450,   99.337,  4.500% of 2047
+2047-05-15,  0.0625,  122.497,  6.250% of 2047

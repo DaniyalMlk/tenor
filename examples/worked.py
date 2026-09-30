@@ -19,16 +19,22 @@ import sys
 from datetime import date
 
 from tenor import (
+    Accrual,
     Basis,
     Bond,
+    BondFuture,
     Deposit,
     Exercise,
+    Frequency,
     Interpolation,
     Lattice,
     Swap,
     bootstrap,
     buckets_from,
+    cheapest_to_deliver,
+    conversion_factor,
     day_count,
+    delivery_switch,
     ho_lee_convexity,
     instrument_risk,
     key_rates,
@@ -296,6 +302,133 @@ put_cost = 1e4 * option_cost(put_ignoring, put_modelling)
 check("option cost of a putable, bp (the holder is long it)", put_cost, -2.6, 0.5)
 if put_cost >= 0.0:
     FAILURES.append("a putable bond's option cost must be negative")
+
+# -- 9. Deliverable bond futures ----------------------------------------------
+
+rule("9. A delivery basket, and where the cheapest bond switches")
+
+DELIVERY_FIRST = date(2026, 12, 1)
+DELIVERY = date(2026, 12, 31)
+BASKET_SETTLEMENT = date(2026, 11, 20)
+CONTRACT = BondFuture(
+    first_delivery=DELIVERY_FIRST, delivery=DELIVERY, label="a long contract"
+)
+
+
+def deliverable_bond(maturity: date, coupon: float, label: str) -> Bond:
+    return Bond(
+        effective=date(maturity.year - 40, maturity.month, maturity.day),
+        maturity=maturity,
+        coupon=coupon,
+        frequency=Frequency.SEMI_ANNUAL,
+        basis=Basis.ACT_ACT_ISDA,
+        accrual=Accrual.PERIOD_FRACTION,
+        label=label,
+    )
+
+
+# A bond at exactly the notional coupon with whole years to run is worth par at
+# the notional yield, so its factor is one. This is the check the closed form's
+# shape is easiest to fail, and it is independent of everything else here.
+check(
+    "factor, 6% with 20 whole years to run",
+    conversion_factor(
+        deliverable_bond(date(2046, 12, 1), 0.06, "at the notional"),
+        DELIVERY_FIRST,
+        digits=None,
+    ),
+    1.0,
+    1e-14,
+)
+# And with a quarter of odd life it is not one. The residue is the rounding
+# convention: the stream is discounted half a period and half a coupon of
+# accrued interest comes off, and the two do not cancel.
+check(
+    "factor, 6% with a three-month stub",
+    conversion_factor(
+        deliverable_bond(date(2047, 3, 1), 0.06, "with a stub"),
+        DELIVERY_FIRST,
+        digits=None,
+    ),
+    0.9998891565,
+    5e-10,
+)
+
+BASKET = [
+    deliverable_bond(date(2046, 8, 15), 0.0175, "1.750% of 2046"),
+    deliverable_bond(date(2046, 11, 15), 0.0300, "3.000% of 2046"),
+    deliverable_bond(date(2047, 2, 15), 0.0450, "4.500% of 2047"),
+    deliverable_bond(date(2047, 5, 15), 0.0625, "6.250% of 2047"),
+]
+# The quotes as `examples/basket.txt` carries them, rounded to three decimals
+# the way a screen shows them, rather than recomputed from a flat 4.55% yield.
+# The rounding is worth 7.8e-5 of a point on the price the basket justifies, and
+# pinning the number the command line prints is more useful than pinning one
+# nobody can reproduce from the file in the repository.
+BASKET_PRICES = [63.782, 79.795, 99.337, 122.497]
+for bond, quoted in zip(BASKET, BASKET_PRICES, strict=True):
+    if abs(bond.clean_price(0.0455, BASKET_SETTLEMENT) - quoted) > 5e-4:
+        FAILURES.append(f"{bond.name} is not the quote in examples/basket.txt")
+QUOTE = 118.75
+REPO = 0.042
+
+ranked = cheapest_to_deliver(
+    BASKET,
+    CONTRACT,
+    clean_prices=BASKET_PRICES,
+    futures_price=QUOTE,
+    settlement=BASKET_SETTLEMENT,
+    repo=REPO,
+)
+check("price the basket justifies", ranked.implied_futures_price, 118.9266122, 1e-6)
+if not ranked.unanimous:
+    FAILURES.append("the three criteria disagree on this basket, and should not")
+if ranked.by_net_basis.bond.name != "6.250% of 2047":
+    FAILURES.append("the cheapest bond moved")
+
+# Net basis and the implied repo rate are one number written twice. Both sides
+# are computed by different routes, so this is a statement about the definitions.
+worst_identity = max(
+    abs(one.net_basis - (REPO - one.implied_repo) * one.financed_balance)
+    for one in ranked.basis
+)
+check("net basis against the implied repo identity", worst_identity, 0.0, 1e-12)
+worst_price_identity = max(
+    abs(one.net_basis - (one.breakeven_futures_price - QUOTE) * one.conversion_factor)
+    for one in ranked.basis
+)
+check("net basis against the break-even identity", worst_price_identity, 0.0, 1e-12)
+
+# The factors span a factor of two; the factor over the financed balance barely
+# moves, which is why the rate and the price criteria agree and the net basis is
+# the one on its own scale.
+factors = [one.conversion_factor for one in ranked.basis]
+ratios = [one.conversion_factor / one.financed_balance for one in ranked.basis]
+check("spread of conversion factors, ratio", max(factors) / min(factors), 1.997, 0.002)
+check("spread of factor over balance, ratio", max(ratios) / min(ratios), 1.0465, 5e-4)
+
+# The switch is at the notional coupon. Whole years to maturity make the
+# rounding convention a no-op, which is the condition for it to be exact.
+PAIR = [
+    deliverable_bond(date(2032, 12, 1), 0.06, "short"),
+    deliverable_bond(date(2056, 12, 1), 0.06, "long"),
+]
+low, high = 0.01, 0.15
+BELOW = delivery_switch(
+    PAIR, CONTRACT, settlement=BASKET_SETTLEMENT, repo=REPO, yields=[low]
+)[0].cheapest
+for _ in range(200):
+    middle = 0.5 * (low + high)
+    at = delivery_switch(
+        PAIR, CONTRACT, settlement=BASKET_SETTLEMENT, repo=REPO, yields=[middle]
+    )[0].cheapest
+    if at == BELOW:
+        low = middle
+    else:
+        high = middle
+check("yield at which the cheapest bond switches, %", 50.0 * (low + high), 6.0, 1e-6)
+if BELOW != "short":
+    FAILURES.append("below the notional coupon the shortest bond should be cheapest")
 
 # -- done ---------------------------------------------------------------------
 
