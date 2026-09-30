@@ -27,7 +27,7 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
-from .bond import Bond
+from .bond import Accrual, Bond
 from .bootstrap import Bootstrapped, bootstrap
 from .calendar import WEEKENDS_ONLY
 from .credit import (
@@ -39,6 +39,13 @@ from .credit import (
 from .curve import Interpolation
 from .daycount import Basis
 from .floating import FloatingNote
+from .futures import (
+    DEFAULT_DIGITS,
+    DEFAULT_NOTIONAL_COUPON,
+    BondFuture,
+    cheapest_to_deliver,
+    delivery_switch,
+)
 from .horizon import horizon_return
 from .inflation import (
     LinkedBond,
@@ -568,20 +575,36 @@ def run_option(arguments: argparse.Namespace) -> dict[str, object]:
 def _report(payload: dict[str, object], as_json: bool) -> str:
     if as_json:
         return json.dumps(payload, indent=2, default=str)
-    lines = []
+    return "\n".join(_lines(payload, ""))
+
+
+def _lines(payload: dict[str, object], indent: str) -> list[str]:
+    """Render a payload as text, recursing into nested mappings.
+
+    Recursive rather than two levels deep by hand. A nested mapping used to fall
+    through to ``str``, so the ``credit`` command's bond block printed as a
+    Python dict on one line, complete with quotes and braces -- readable, in the
+    sense that everything is in there somewhere.
+    """
+    lines: list[str] = []
     for key, item in payload.items():
-        if isinstance(item, list):
-            lines.append(f"{key}:")
+        if isinstance(item, dict):
+            lines.append(f"{indent}{key}:")
+            lines.extend(_lines(item, indent + "  "))
+        elif isinstance(item, list):
+            lines.append(f"{indent}{key}:")
             for entry in item:
                 if isinstance(entry, dict):
                     lines.append(
-                        "  " + "  ".join(f"{k}={_show(v)}" for k, v in entry.items())
+                        indent
+                        + "  "
+                        + "  ".join(f"{k}={_show(v)}" for k, v in entry.items())
                     )
                 else:  # pragma: no cover - every list here holds dicts
-                    lines.append(f"  {entry}")
+                    lines.append(f"{indent}  {entry}")
         else:
-            lines.append(f"{key}: {_show(item)}")
-    return "\n".join(lines)
+            lines.append(f"{indent}{key}: {_show(item)}")
+    return lines
 
 
 def _show(item: object) -> str:
@@ -705,6 +728,167 @@ def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
             "riskless_price": riskless,
             "risky_price": risky,
             "credit_cost": riskless - risky,
+        }
+    return result
+
+
+def _basket(text: str, *, bond_basis: Basis, frequency: Frequency) -> list[tuple[Bond, float]]:
+    """Parse a deliverable basket: ``maturity, coupon, clean price[, label]``.
+
+    Comma separated if the line has a comma, whitespace otherwise, and a label
+    may carry spaces because it is whatever is left of the line. The coupon is a
+    decimal and the price is per 100, both stated in the help rather than
+    guessed at here: a basket file with coupons in per cent parses perfectly and
+    produces conversion factors an order of magnitude out, so the error to avoid
+    is the one that does not raise.
+    """
+    basket: list[tuple[Bond, float]] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = (
+            [cell.strip() for cell in line.split(",", 3)]
+            if "," in line
+            else line.split(None, 3)
+        )
+        if len(fields) < 3:
+            raise ValueError(
+                f"line {number}: {raw.strip()!r} has {len(fields)} fields, expected a "
+                "maturity, a coupon and a clean price"
+            )
+        try:
+            maturity = date.fromisoformat(fields[0])
+        except ValueError as bad:
+            raise ValueError(f"line {number}: {fields[0]!r} is not an ISO date") from bad
+        try:
+            coupon = float(fields[1])
+            price = float(fields[2])
+        except ValueError as bad:
+            raise ValueError(
+                f"line {number}: {fields[1]!r} and {fields[2]!r} are not both numbers"
+            ) from bad
+        if coupon > 1.0:
+            raise ValueError(
+                f"line {number}: a coupon of {coupon} is a percentage, not a decimal; "
+                "write 0.0475 rather than 4.75"
+            )
+        label = fields[3].strip() if len(fields) > 3 else ""
+        basket.append(
+            (
+                Bond(
+                    effective=date(maturity.year - 40, maturity.month, maturity.day),
+                    maturity=maturity,
+                    coupon=coupon,
+                    frequency=frequency,
+                    basis=bond_basis,
+                    accrual=Accrual.PERIOD_FRACTION,
+                    label=label,
+                ),
+                price,
+            )
+        )
+    if not basket:
+        raise ValueError("the basket file holds no deliverable bonds")
+    return basket
+
+
+def run_futures(arguments: argparse.Namespace) -> dict[str, object]:
+    """Price the basis of a deliverable bond future against a quoted basket.
+
+    This is the one command that takes no curve. The whole calculation is the
+    bond's own quoted price, its conversion factor and a money-market financing
+    rate, and asking for a file of swap quotes to compute it would be asking for
+    something it does not read. The switch walk prices the basket off a flat
+    yield instead, which is stated in the output so that nobody reads those
+    prices as the quoted ones.
+    """
+    bond_basis = _basis(arguments.bond_basis)
+    frequency = Frequency[arguments.frequency.upper()]
+    basket = _basket(
+        Path(arguments.basket).read_text(), bond_basis=bond_basis, frequency=frequency
+    )
+    settlement = date.fromisoformat(arguments.settlement)
+    future = BondFuture(
+        first_delivery=date.fromisoformat(arguments.first_delivery),
+        delivery=date.fromisoformat(arguments.delivery),
+        notional_coupon=arguments.notional_coupon,
+        digits=arguments.digits,
+        money_basis=_basis(arguments.money_basis),
+    )
+    bonds = [bond for bond, _ in basket]
+    prices = [price for _, price in basket]
+    ranked = cheapest_to_deliver(
+        bonds,
+        future,
+        clean_prices=prices,
+        futures_price=arguments.price,
+        settlement=settlement,
+        repo=arguments.repo,
+    )
+    deliverables = [
+        {
+            "bond": entry.bond.name,
+            "maturity": entry.bond.maturity.isoformat(),
+            "coupon": entry.bond.coupon,
+            "conversion_factor": entry.conversion_factor,
+            "clean_price": entry.clean_price,
+            "accrued_at_delivery": entry.accrued_at_delivery,
+            "invoice_price": entry.invoice_price,
+            "gross_basis": entry.gross_basis,
+            "carry": entry.carry,
+            "net_basis": entry.net_basis,
+            "implied_repo": entry.implied_repo,
+            "financed_balance": entry.financed_balance,
+            "breakeven_futures_price": entry.breakeven_futures_price,
+            "interim_coupons": [
+                {"date": day.isoformat(), "amount": amount}
+                for day, amount in entry.interim_coupons
+            ],
+        }
+        for entry in ranked.basis
+    ]
+    result: dict[str, object] = {
+        "contract": future.name,
+        "first_delivery": future.first_delivery.isoformat(),
+        "delivery": future.delivery.isoformat(),
+        "settlement": settlement.isoformat(),
+        "notional_coupon": future.notional_coupon,
+        "quoted_price": arguments.price,
+        "repo": arguments.repo,
+        "deliverables": deliverables,
+        "cheapest_to_deliver": {
+            "by_implied_repo": ranked.by_implied_repo.bond.name,
+            "by_net_basis": ranked.by_net_basis.bond.name,
+            "by_futures_price": ranked.by_futures_price.bond.name,
+            "unanimous": ranked.unanimous,
+            # The price the basket justifies, against the price it is quoted at.
+            # A quote below this is the delivery option being paid for; a quote
+            # above it is an arbitrage or a stale price.
+            "implied_futures_price": ranked.implied_futures_price,
+            "quote_less_implied": arguments.price - ranked.implied_futures_price,
+        },
+    }
+    if arguments.switch:
+        levels = delivery_switch(
+            bonds,
+            future,
+            settlement=settlement,
+            repo=arguments.repo,
+            yields=arguments.switch,
+        )
+        result["switch"] = {
+            "priced_at": "a flat yield, not the quoted prices",
+            "levels": [
+                {
+                    "yield": level.yield_level,
+                    "cheapest": level.cheapest,
+                    "runner_up": level.runner_up,
+                    "futures_price": level.futures_price,
+                    "margin": level.margin,
+                }
+                for level in levels
+            ],
         }
     return result
 
@@ -970,6 +1154,89 @@ def parser() -> argparse.ArgumentParser:
     )
     credit.add_argument("--bond-coupon", dest="bond_coupon", type=float, default=0.05)
     credit.set_defaults(run=run_credit)
+
+    futures = subcommands.add_parser(
+        "futures",
+        help="price the basis of a deliverable bond future",
+        description=(
+            "Takes a basket file of 'maturity, coupon, clean price[, label]' rows "
+            "and a quoted futures price, and reports every deliverable's "
+            "conversion factor, gross basis, carry, net basis and implied repo "
+            "rate, then the cheapest to deliver by all three of the conventional "
+            "criteria. It takes no curve: the calculation is the quoted price, "
+            "the factor and a money-market financing rate, and nothing else. "
+            "Coupons are decimals -- 0.0475, not 4.75 -- and a value above one is "
+            "refused rather than used, because a basket in per cent parses "
+            "perfectly and is wrong by a factor of a hundred."
+        ),
+    )
+    futures.add_argument("basket", help="a file of maturity,coupon,clean-price rows")
+    futures.add_argument(
+        "--settlement", required=True, help="when the cash bond is bought, ISO"
+    )
+    futures.add_argument(
+        "--first-delivery",
+        dest="first_delivery",
+        required=True,
+        help="first day of the delivery month, which is when the factor is computed",
+    )
+    futures.add_argument(
+        "--delivery", required=True, help="the delivery date assumed, ISO"
+    )
+    futures.add_argument(
+        "--price", required=True, type=float, help="the quoted futures price, per 100"
+    )
+    futures.add_argument(
+        "--repo",
+        required=True,
+        type=float,
+        help="the financing rate as a decimal, simple interest on the money basis",
+    )
+    futures.add_argument(
+        "--notional-coupon",
+        dest="notional_coupon",
+        type=float,
+        default=DEFAULT_NOTIONAL_COUPON,
+        help="the yield the conversion factors are computed at",
+    )
+    futures.add_argument(
+        "--digits",
+        type=int,
+        default=DEFAULT_DIGITS,
+        help="published precision of the conversion factor",
+    )
+    futures.add_argument(
+        "--money-basis",
+        dest="money_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+        help="day count the financing accrues on, which is not the bond's",
+    )
+    futures.add_argument(
+        "--bond-basis",
+        dest="bond_basis",
+        default=Basis.ACT_ACT_ISDA.name,
+        choices=[one.name for one in Basis],
+        help="day count the deliverables accrue on",
+    )
+    futures.add_argument(
+        "--frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+        help="coupon frequency of the deliverables",
+    )
+    futures.add_argument(
+        "--switch",
+        nargs="+",
+        type=float,
+        default=None,
+        metavar="YIELD",
+        help=(
+            "also walk these flat yields and report the cheapest bond at each, "
+            "which is where the short's delivery option comes from"
+        ),
+    )
+    futures.set_defaults(run=run_futures)
 
     return root
 
