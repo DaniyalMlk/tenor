@@ -33,13 +33,30 @@ reader to think there is a fixed point where there is not.
 
 where the financed balance is the dirty price accrued over the holding period,
 less each interim coupon accrued from its own payment date. That identity is
-asserted to machine precision in the tests, and it is the whole answer to the
-question of which definition of cheapest to deliver to use: ranking by lowest
-net basis and ranking by highest implied repo rate give the same order if and
-only if the financed balance is common to the basket, which it is not. A
-deep-discount long bond finances around half the balance of a high-coupon short
-one, so a price comparison and a rate comparison disagree by construction, and
-the disagreement is the spread of prices rather than anything about the bonds.
+asserted to machine precision in the tests. It also settles which of the
+conventional definitions of cheapest to deliver can disagree with which, and the
+answer is not the one the algebra suggests.
+
+**Net basis is the odd criterion, and it is nearly always safe anyway.** The
+three conventions rank the basket on the same gap between a bond's break-even
+futures price and the quote, scaled three different ways: unscaled, times the
+conversion factor (net basis), and times the factor over the financed balance
+(implied repo). The expectation is that the rate and the price part company,
+because a deep-discount long bond finances around half the balance of a
+high-coupon short one. Measured on a four-bond long basket, that is wrong: the
+factors span a ratio of 2.00 and the factor *over* the balance spans 4.65%,
+because the balance is very nearly the price and the price is very nearly the
+factor times the futures price, so the factor cancels. The implied repo rate and
+the break-even futures price therefore rank a basket alike.
+
+It is the net basis that is measured in a different unit -- points per 100 of
+*the bond's* face, not per contract -- and dividing it by the conversion factor
+recovers the futures-price criterion exactly. On that basket the quote has to be
+5.00 points, or 4.20%, below the basket-implied price before the net-basis
+ranking picks a different bond, at which point every deliverable shows several
+points of arbitrage and the question is academic. So comparing raw net bases
+across a basket does compare quantities in different units, and gets away with
+it because a liquid contract never trades five points from fair.
 
 """
 
@@ -57,8 +74,10 @@ from .schedule import add_months
 __all__ = [
     "BadDelivery",
     "BondFuture",
+    "CheapestToDeliver",
     "DeliveryBasis",
     "RoundedLife",
+    "cheapest_to_deliver",
     "conversion_factor",
     "delivery_basis",
     "implied_repo_rate",
@@ -480,4 +499,89 @@ def delivery_basis(
             holding_period=holding,
         ),
         breakeven_futures_price=(clean_price - carry) / factor,
+    )
+
+
+@dataclass(frozen=True)
+class CheapestToDeliver:
+    """The basket, ranked, and whether the three conventions agree.
+
+    Attributes:
+        basis: Every deliverable's cash-and-carry, in the order given.
+        by_implied_repo: The bond with the highest implied repo rate.
+        by_net_basis: The bond with the lowest net basis.
+        by_futures_price: The bond justifying the lowest futures price, which
+            is the definition that does not need a quote.
+        unanimous: Whether all three name the same bond.
+    """
+
+    basis: tuple[DeliveryBasis, ...]
+    by_implied_repo: DeliveryBasis
+    by_net_basis: DeliveryBasis
+    by_futures_price: DeliveryBasis
+    unanimous: bool
+
+    @property
+    def implied_futures_price(self) -> float:
+        """The futures price the basket justifies: the lowest any bond does."""
+        return self.by_futures_price.breakeven_futures_price
+
+
+def cheapest_to_deliver(
+    basket: Sequence[Bond],
+    future: BondFuture,
+    *,
+    clean_prices: Sequence[float],
+    futures_price: float,
+    settlement: date,
+    repo: float,
+) -> CheapestToDeliver:
+    """Rank a basket by all three conventional criteria.
+
+    All three rank on the gap between a bond's break-even futures price and the
+    quote, scaled differently: unscaled for the price criterion, times the
+    conversion factor for the net basis, and times the factor over the financed
+    balance for the implied repo rate. So the orders differ only as much as
+    those scalings do, and they do not differ equally. Factor over balance is
+    nearly constant across a basket -- 4.65% of spread against the factors' own
+    ratio of 2.00, on the long basket in the tests -- because the balance is
+    nearly the price and the price is nearly the factor times the futures price.
+    The rate and the price therefore agree in practice, which is the opposite of
+    what the algebra suggests, and the net basis is the criterion on its own
+    scale.
+
+    None of that makes any of them wrong. A desk financing at a single rate
+    across the basket wants the rate comparison; one asked what the contract
+    should trade at wants the price. :attr:`CheapestToDeliver.unanimous` says
+    whether the question mattered on this basket, and on any quote within five
+    points of fair value it does not.
+    """
+    if len(basket) != len(clean_prices):
+        raise BadDelivery(
+            f"{len(basket)} bonds and {len(clean_prices)} prices; the basket and its "
+            "quotes have to line up"
+        )
+    if not basket:
+        raise BadDelivery("an empty basket has no cheapest bond")
+    entries = tuple(
+        delivery_basis(
+            bond,
+            future,
+            clean_price=price,
+            futures_price=futures_price,
+            settlement=settlement,
+            repo=repo,
+        )
+        for bond, price in zip(basket, clean_prices, strict=True)
+    )
+    by_repo = max(entries, key=lambda one: one.implied_repo)
+    by_net = min(entries, key=lambda one: one.net_basis)
+    by_price = min(entries, key=lambda one: one.breakeven_futures_price)
+    names = {by_repo.bond.name, by_net.bond.name, by_price.bond.name}
+    return CheapestToDeliver(
+        basis=entries,
+        by_implied_repo=by_repo,
+        by_net_basis=by_net,
+        by_futures_price=by_price,
+        unanimous=len(names) == 1,
     )

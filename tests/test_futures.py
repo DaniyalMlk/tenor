@@ -20,6 +20,7 @@ from tenor.daycount import Basis, year_fraction
 from tenor.futures import (
     BadDelivery,
     BondFuture,
+    cheapest_to_deliver,
     conversion_factor,
     delivery_basis,
     implied_repo_rate,
@@ -671,3 +672,226 @@ def test_the_contract_method_and_the_function_are_the_same_call() -> None:
         repo=REPO,
     )
     assert through_method == through_function
+
+
+# -- the cheapest to deliver -------------------------------------------------
+
+#: Four long bonds with similar maturities and very different coupons, so the
+#: conversion factors span a ratio of two while the durations barely differ.
+#: That is the basket in which the three criteria have the best chance of
+#: disagreeing, which is why it is the one they are tested on.
+LONG_BASKET = (
+    (date(2046, 8, 15), 0.0175, "1.750% of 2046"),
+    (date(2046, 11, 15), 0.0300, "3.000% of 2046"),
+    (date(2047, 2, 15), 0.0450, "4.500% of 2047"),
+    (date(2047, 5, 15), 0.0625, "6.250% of 2047"),
+)
+
+
+def long_basket() -> tuple[list[Bond], list[float]]:
+    """The basket, priced off one flat yield so nothing is arbitrarily rich."""
+    bonds = [deliverable(maturity, coupon, label=label) for maturity, coupon, label in LONG_BASKET]
+    return bonds, [bond.clean_price(0.0455, SETTLEMENT) for bond in bonds]
+
+
+def basket_implied_price(bonds: list[Bond], prices: list[float]) -> float:
+    probe = cheapest_to_deliver(
+        bonds,
+        CONTRACT,
+        clean_prices=prices,
+        futures_price=100.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    return probe.implied_futures_price
+
+
+def test_at_the_basket_implied_price_the_cheapest_bond_has_no_net_basis() -> None:
+    """Which is what makes that price the one the contract should trade at.
+
+    Every other deliverable is dearer, so its net basis is positive and its
+    implied repo rate is below the financing rate assumed. That is the whole
+    content of "cheapest to deliver": one bond breaks even and the rest lose.
+    """
+    bonds, prices = long_basket()
+    fair = basket_implied_price(bonds, prices)
+    ranked = cheapest_to_deliver(
+        bonds,
+        CONTRACT,
+        clean_prices=prices,
+        futures_price=fair,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    assert ranked.unanimous
+    cheapest = ranked.by_futures_price
+    assert cheapest.net_basis == pytest.approx(0.0, abs=1e-10)
+    assert cheapest.implied_repo == pytest.approx(REPO, abs=1e-12)
+    for entry in ranked.basis:
+        if entry.bond.name == cheapest.bond.name:
+            continue
+        assert entry.net_basis > 0.0
+        assert entry.implied_repo < REPO
+
+
+def test_the_financed_balance_is_nearly_proportional_to_the_conversion_factor() -> None:
+    """The measurement that decides which criteria can disagree.
+
+    The natural expectation is that the implied repo rate and the net basis part
+    company, because a deep-discount long bond finances around half the balance
+    of a high-coupon short one. The factors here do span a ratio of 2.00. But
+    the ratio that converts a rate into a price is the factor *over* the
+    balance, and the balance is nearly the dirty price, and the dirty price is
+    nearly the factor times the futures price -- so the factor cancels and the
+    ratio spans 4.65%. The rate and the price rank a basket alike; it is the net
+    basis, a price per 100 of the bond's own face, that is on its own scale.
+    """
+    bonds, prices = long_basket()
+    ranked = cheapest_to_deliver(
+        bonds,
+        CONTRACT,
+        clean_prices=prices,
+        futures_price=basket_implied_price(bonds, prices),
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    factors = [entry.conversion_factor for entry in ranked.basis]
+    ratios = [entry.conversion_factor / entry.financed_balance for entry in ranked.basis]
+    assert max(factors) / min(factors) == pytest.approx(1.997, abs=0.002)
+    assert max(ratios) / min(ratios) == pytest.approx(1.0465, abs=0.0005)
+
+
+def test_the_quote_must_be_five_points_from_fair_before_the_rankings_split() -> None:
+    """Quantifying how safe the wrong unit is.
+
+    Walking the quote down from the basket-implied price, the net-basis ranking
+    holds with the other two for 5.00 points -- 4.20% -- and then picks the
+    4.500% of 2047 while both other criteria stay with the 6.250%. By then every
+    deliverable shows several points of arbitrage, so the disagreement is real
+    and not a situation anybody trades in. Comparing raw net bases across a
+    basket is comparing points per 100 of different bonds' face, and it gets
+    away with it because a liquid contract does not trade five points from fair.
+    """
+    bonds, prices = long_basket()
+    fair = basket_implied_price(bonds, prices)
+
+    def verdicts(price: float) -> tuple[str, str, str]:
+        ranked = cheapest_to_deliver(
+            bonds,
+            CONTRACT,
+            clean_prices=prices,
+            futures_price=price,
+            settlement=SETTLEMENT,
+            repo=REPO,
+        )
+        return (
+            ranked.by_implied_repo.bond.name,
+            ranked.by_net_basis.bond.name,
+            ranked.by_futures_price.bond.name,
+        )
+
+    agreed = verdicts(fair)
+    assert len(set(agreed)) == 1
+    # The split is at exactly 5.00 points, so the walk has to reach past it: a
+    # bound of 500 steps stops one hundredth short and finds nothing.
+    for step in range(1, 900):
+        if verdicts(fair - 0.01 * step) != agreed:
+            gap = 0.01 * step
+            break
+    else:  # pragma: no cover - the split is at five points, well inside the walk
+        raise AssertionError("no split found within five points of fair value")
+    assert gap == pytest.approx(5.00, abs=0.01)
+    assert 100.0 * gap / fair == pytest.approx(4.20, abs=0.01)
+    split = verdicts(fair - gap)
+    assert split == ("6.250% of 2047", "4.500% of 2047", "6.250% of 2047")
+
+
+def test_dividing_the_net_basis_by_the_factor_recovers_the_price_criterion() -> None:
+    """Exactly, not approximately -- so the odd unit has an exact remedy.
+
+    ``net basis / factor = break-even futures price - quote``, and the quote is
+    common to the basket, so ranking on the left is ranking on the right. Tested
+    at the quote where the raw net basis disagrees, because that is the only
+    place the claim has any content.
+    """
+    bonds, prices = long_basket()
+    quote = basket_implied_price(bonds, prices) - 5.0
+    ranked = cheapest_to_deliver(
+        bonds,
+        CONTRACT,
+        clean_prices=prices,
+        futures_price=quote,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    for entry in ranked.basis:
+        assert entry.net_basis / entry.conversion_factor == pytest.approx(
+            entry.breakeven_futures_price - quote, rel=1e-12
+        )
+    by_scaled = min(
+        ranked.basis, key=lambda one: one.net_basis / one.conversion_factor
+    )
+    assert by_scaled.bond.name == ranked.by_futures_price.bond.name
+    assert by_scaled.bond.name != ranked.by_net_basis.bond.name
+
+
+def test_the_break_even_price_does_not_depend_on_the_quote() -> None:
+    """Which is what makes it the criterion available without one."""
+    bonds, prices = long_basket()
+    first = cheapest_to_deliver(
+        bonds,
+        CONTRACT,
+        clean_prices=prices,
+        futures_price=90.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    second = cheapest_to_deliver(
+        bonds,
+        CONTRACT,
+        clean_prices=prices,
+        futures_price=130.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    assert [one.breakeven_futures_price for one in first.basis] == pytest.approx(
+        [one.breakeven_futures_price for one in second.basis], rel=1e-14
+    )
+    assert first.by_futures_price.bond.name == second.by_futures_price.bond.name
+
+
+def test_a_basket_of_one_is_unanimous_and_is_its_own_cheapest() -> None:
+    bond = deliverable(date(2046, 11, 15), 0.0475, label="only one")
+    ranked = cheapest_to_deliver(
+        [bond],
+        CONTRACT,
+        clean_prices=[98.5],
+        futures_price=114.0,
+        settlement=SETTLEMENT,
+        repo=REPO,
+    )
+    assert ranked.unanimous
+    assert ranked.by_net_basis.bond.name == "only one"
+    assert ranked.implied_futures_price == ranked.basis[0].breakeven_futures_price
+
+
+def test_a_basket_and_its_quotes_have_to_line_up() -> None:
+    bonds, prices = long_basket()
+    with pytest.raises(BadDelivery, match="have to line up"):
+        cheapest_to_deliver(
+            bonds,
+            CONTRACT,
+            clean_prices=prices[:-1],
+            futures_price=118.0,
+            settlement=SETTLEMENT,
+            repo=REPO,
+        )
+    with pytest.raises(BadDelivery, match="empty basket"):
+        cheapest_to_deliver(
+            [],
+            CONTRACT,
+            clean_prices=[],
+            futures_price=118.0,
+            settlement=SETTLEMENT,
+            repo=REPO,
+        )
