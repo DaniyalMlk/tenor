@@ -1,0 +1,9 @@
+# Tenor basis: the spread quoted on a three-month leg against a six-month leg
+# paying flat. These solve the SIX-month curve, with the three-month one taken
+# as known -- so this file is not interchangeable with forecast.txt, and mixing
+# the two kinds of quote in one file is refused.
+forward  2026-01-15  2026-07-15  0.0315  ACT_360
+basis    2027-01-15  0.0005
+basis    2029-01-15  0.0007
+basis    2031-01-15  0.0008
+basis    2036-01-15  0.0009

@@ -1,0 +1,9 @@
+# Overnight-indexed swaps: the curve a collateralised trade discounts on.
+# One instrument per line, '#' starts a comment.
+deposit  2026-04-15  0.0290  ACT_360
+swap     2027-01-15  0.0310  ANNUAL  ACT_365F
+swap     2028-01-17  0.0325  ANNUAL  ACT_365F
+swap     2029-01-15  0.0338  ANNUAL  ACT_365F
+swap     2031-01-15  0.0352  ANNUAL  ACT_365F
+swap     2033-01-17  0.0361  ANNUAL  ACT_365F
+swap     2036-01-15  0.0368  ANNUAL  ACT_365F

@@ -1043,6 +1043,143 @@ off: a subtraction that can never fire reads as a case somebody handled. The tes
 sweeps every maturity for a month either side of the delivery month at a daily
 step, looking for the counterexample.
 
+## Two curves, and what the second one is actually worth
+
+A floating leg forecast off the curve it is discounted on collapses to one
+subtraction. Each period's projected growth is its own discount ratio, so the
+sum telescopes, every intermediate date cancels, and `P(start) - P(maturity)`
+prices the whole leg without computing a single forward rate. That is exact for
+any curve of any shape, and it is how `Swap` values its floating leg.
+
+It stopped describing the market in 2008. A three-month deposit rate and an
+overnight-indexed rate had sat within a basis point or two of each other for a
+decade; they separated and stayed separated, because the index a swap forecasts
+carries term credit and funding risk and the rate a collateralised swap
+discounts at does not. Once the two differ, nothing cancels and the leg has to
+be valued coupon by coupon.
+
+```
+$ tenor multicurve examples/ois.txt --reference 2026-01-15 --basis ACT_365F \
+      --forecast examples/forecast.txt --maturity 2036-01-15
+reference: 2026-01-15
+index: 3m index
+forecast_curve:
+  solving_for: 3m index
+  quotes_used: 7
+  short_leg_projected_on: itself
+  sweeps: 1
+  worst_repricing_error: 2.775557562e-16
+  reprices: True
+  ...
+forward_basis:
+  start=2026-04-15  end=2026-07-15  projected=0.03309  discounting=0.03063  basis_points=24.65
+  start=2027-01-15  end=2027-04-15  projected=0.03540  discounting=0.03315  basis_points=22.43
+  ...
+swap:
+  maturity: 2036-01-15
+  par_rate: 0.0389
+  par_rate_on_one_curve: 0.03648486931
+  basis_points_from_separating: 24.15130694
+  risk:
+    from_the_discount_curve: -1.14551659e-06
+    from_the_forecast_curve: 0.0008480843596
+    from_both_together: 0.0008469389715
+    cross_term: 1.285412055e-10
+```
+
+Two files go in. The first is the ordinary quote screen and builds the
+discount curve; the second is quotes on the *index*, and a projection curve is
+solved out of them with the discount curve held fixed. That is the order the
+market works in, and it is the reason the bootstrap takes the discount curve as
+an argument rather than returning a pair.
+
+### The identity, kept as a test
+
+Point both curves at the same object and the coupon-by-coupon leg has to
+reproduce the subtraction. On the ten-year quarterly leg it does, to **7.2e-16**
+of the leg's value — not bit for bit, since the two expressions accumulate
+rounding in different orders, but to the last few bits, which is what says the
+new path carries no error of its own.
+
+What the identity needs turned out to be narrower than it looked, and the first
+draft of this got it wrong. The cancellation is between one period's `P(end)`
+and the next period's `P(start)`, so it needs the payment to land on the accrual
+end. The rolling convention was the suspect and it is innocent: under modified
+following a period ending on a Saturday rolls to the Monday, and the payment
+rolls with it, so the dates still meet. A **payment lag** is the culprit, since
+it moves the payment without moving the accrual it pays for. At the two business
+days an overnight-indexed leg settles on, the gap is 0.095 basis points of par
+rate; at five days, 0.262. The lag is therefore a field on the index, it
+defaults to zero, and that zero is load-bearing.
+
+### The discount curve is worth almost nothing on a par rate
+
+Separating the curves is usually introduced as the thing that repriced swaps.
+For a par rate it does not. Shifting the projection curve by 100 basis points
+moves the ten-year par rate by 101.62 basis points. Shifting the *discount*
+curve by the same amount moves it by **-0.12 basis points** — the other way, and
+smaller by a factor of 843.
+
+That is not a surprise once the par rate is written down as what it is: a
+discount-weighted average of the forwards the leg projects. The projection curve
+moves every term in the average; the discount curve only reweights them. On an
+upward-sloping curve, heavier discounting tilts the weights towards the earlier
+and lower forwards, so the average falls a little.
+
+The split in the output above is the same statement in money: a par swap's
+response to the discount curve is `-1.1e-06` against the forecast curve's
+`8.5e-04`. The two do not add to the joint response, because a swap's value is
+bilinear in the two curves; the cross term is `1.3e-10`, which is 1.4e-07 of the
+joint response and grows with the square of the shift.
+
+Where the discount curve *is* worth something is a swap that is not at par. A
+ten-year swap struck 100 basis points away from the market is the rate
+difference times the annuity, and the annuity is all discount curve: that same
+shift moves its mark by **4.67%** of itself, against the 0.031% it moves the par
+rate's level. Third-order for a new trade and first-order for a book of old
+ones, which is the reverse of the order the choice is usually introduced in.
+
+### The basis passes through at 1.0146, and that factorises exactly
+
+Raise every projected forward by a flat 20 basis points and the ten-year par
+swap rate rises by 20.29. The pass-through is not one, for two reasons that pull
+opposite ways: the two legs' annuities stand in the ratio **1.0191** — actual/360
+floating against 30/360 fixed — and a flat shift to a continuously compounded
+curve lifts a simply compounded quarterly forward by **0.9956** of itself. Their
+product is 1.014643 and the measured pass-through is 1.014643. They agree to
+5.8e-15, which is what distinguishes a decomposition from an explanation that
+happens to come out near the right size.
+
+### A curve that reprices every quote is not the curve that produced them
+
+The projection bootstrap fits its inputs to 1e-16 and settles in one sweep under
+log-linear discounts, five under monotone convex. Feed it par rates generated
+off a known curve and ask how close the result is to that curve: beyond a year,
+within 0.03 basis points of zero rate. Between the three-month forward quote and
+the one-year swap, **5.30 basis points** out at 0.49 years. Nothing in that gap
+is pinned by an input, so the interpolation decides it, and an exact fit is a
+statement about the quotes rather than about the curve.
+
+The same hole has a sharper cost in a basis curve. Bootstrapping a six-month
+projection curve from tenor basis spreads of 5 to 9 basis points, with nothing
+quoted inside the first year, leaves an implied six-month-over-three-month
+forward basis of **16.87 basis points** over the first period — the one-year
+quote spread backwards by the interpolation, and three times the number it came
+from. One forward quote on the long index puts the first period at exactly the
+5.00 it says.
+
+```
+$ tenor multicurve examples/ois.txt --reference 2026-01-15 --basis ACT_365F \
+      --forecast examples/basis.txt --flat-frequency SEMI_ANNUAL
+```
+
+A basis file solves the *longer* tenor's curve with the shorter one taken as
+known, so a file mixing par swap rates with basis spreads is asking one solve
+for two curves and is refused rather than resolved. And since the only curve
+this command has been handed is the discount curve, the short leg is projected
+off that — an assumption rather than a quote, so it is named in the output
+rather than left to be inferred from a number that is partly a proxy.
+
 ## Development
 
 ```bash
