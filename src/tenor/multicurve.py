@@ -132,8 +132,8 @@ __all__ = [
     "bootstrap_forecast",
     "discount_key_rates",
     "forecast_key_rates",
-    "forward_rate",
     "forward_spread",
+    "projected_forward",
     "shifted_forecast",
     "split_buckets",
     "split_risk",
@@ -190,10 +190,18 @@ class ForecastIndex:
         return self.calendar if self.calendar is not None else WEEKENDS_ONLY
 
 
-def forward_rate(
+def projected_forward(
     projection: DiscountCurve, start: date, end: date, basis: Basis
 ) -> float:
     """The simply compounded forward rate across ``[start, end)``.
+
+    Not :func:`~tenor.rates.forward_rate`, which takes two discount factors and
+    two year fractions and answers under a stated compounding. This one takes
+    the curve and the two dates, computes the year fraction in the *index's*
+    day count, and is simply compounded because that is what a money-market
+    index quotes. The two agree where the conventions line up and the reason to
+    have both is that an index forward is a statement about an index rather than
+    about a curve.
 
     ``(P(start) / P(end) - 1) / tau``, which is the rate that grows one unit at
     ``start`` into the curve's own implied redemption at ``end``. Negative where
@@ -219,7 +227,7 @@ def forward_spread(
     high: DiscountCurve, low: DiscountCurve, start: date, end: date, basis: Basis
 ) -> float:
     """``high``'s forward over the period, less ``low``'s. The basis, read off."""
-    return forward_rate(high, start, end, basis) - forward_rate(low, start, end, basis)
+    return projected_forward(high, start, end, basis) - projected_forward(low, start, end, basis)
 
 
 def shifted_forecast(curve: DiscountCurve, spread: float) -> DiscountCurve:
@@ -355,7 +363,7 @@ class FloatingLeg:
                     end=period.adjusted_end,
                     payment=period.payment,
                     accrual=accrual,
-                    forward=forward_rate(
+                    forward=projected_forward(
                         projection,
                         period.adjusted_start,
                         period.adjusted_end,

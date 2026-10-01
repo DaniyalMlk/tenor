@@ -39,8 +39,8 @@ from tenor.multicurve import (
     bootstrap_forecast,
     discount_key_rates,
     forecast_key_rates,
-    forward_rate,
     forward_spread,
+    projected_forward,
     shifted_forecast,
     split_buckets,
     split_risk,
@@ -106,7 +106,7 @@ def test_forward_rate_grows_one_unit_into_the_curves_own_redemption(
     projection: DiscountCurve,
 ) -> None:
     start, end = date(2027, 1, 15), date(2027, 4, 15)
-    rate = forward_rate(projection, start, end, Basis.ACT_360)
+    rate = projected_forward(projection, start, end, Basis.ACT_360)
     accrual = (end - start).days / 360.0
     # One unit at ``end`` is worth ``1 / (1 + r tau)`` at ``start``, so the
     # redemption discounted back is the principal: P(end) * (1 + r tau) = P(start).
@@ -118,7 +118,7 @@ def test_forward_rate_refuses_a_period_that_runs_backwards(
     projection: DiscountCurve,
 ) -> None:
     with pytest.raises(BadForecast, match="runs backwards"):
-        forward_rate(projection, date(2027, 4, 15), date(2027, 1, 15), Basis.ACT_360)
+        projected_forward(projection, date(2027, 4, 15), date(2027, 1, 15), Basis.ACT_360)
 
 
 def test_forward_rate_is_negative_where_the_curve_rises(discount: DiscountCurve) -> None:
@@ -127,7 +127,7 @@ def test_forward_rate_is_negative_where_the_curve_rises(discount: DiscountCurve)
         [(date(2027, 1, 15), 1.02), (date(2028, 1, 15), 1.04)],
         basis=Basis.ACT_365F,
     )
-    rate = forward_rate(inverted, date(2027, 1, 15), date(2028, 1, 15), Basis.ACT_360)
+    rate = projected_forward(inverted, date(2027, 1, 15), date(2028, 1, 15), Basis.ACT_360)
     assert rate < 0.0
 
 
@@ -248,7 +248,7 @@ def test_coupons_report_every_number_that_went_into_them(
         assert one.value == pytest.approx(one.cashflow * one.discount)
         assert one.discount == pytest.approx(discount.discount(one.payment))
         assert one.forward == pytest.approx(
-            forward_rate(projection, one.start, one.end, Basis.ACT_360)
+            projected_forward(projection, one.start, one.end, Basis.ACT_360)
         )
     assert leg.value(discount, projection) == pytest.approx(
         sum(one.value for one in coupons)
@@ -466,7 +466,7 @@ def generated_quotes(
         IndexForward(
             REFERENCE,
             date(2026, 4, 15),
-            forward_rate(projection, REFERENCE, date(2026, 4, 15), Basis.ACT_360),
+            projected_forward(projection, REFERENCE, date(2026, 4, 15), Basis.ACT_360),
             label="3m forward",
         )
     ]
@@ -645,7 +645,7 @@ def test_a_bootstrapped_projection_curve_reads_its_quotes_back_as_forwards(
     built = bootstrap_forecast(
         REFERENCE, [quote], discount=discount, basis=Basis.ACT_365F
     )
-    recovered = forward_rate(built.curve, REFERENCE, date(2026, 7, 15), Basis.ACT_360)
+    recovered = projected_forward(built.curve, REFERENCE, date(2026, 7, 15), Basis.ACT_360)
     assert recovered == pytest.approx(0.0330, abs=1e-14)
 
 
@@ -822,7 +822,7 @@ def test_an_unpinned_short_end_puts_the_whole_front_basis_in_one_period(
     pin = IndexForward(
         REFERENCE,
         date(2026, 7, 15),
-        forward_rate(projection, *first, Basis.ACT_360) + 0.0005,
+        projected_forward(projection, *first, Basis.ACT_360) + 0.0005,
         label="6m forward",
     )
     pinned = bootstrap_forecast(

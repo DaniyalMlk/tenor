@@ -84,7 +84,7 @@ from .multicurve import (
     ForecastQuote,
     IndexForward,
     bootstrap_forecast,
-    forward_rate,
+    projected_forward,
     split_risk,
 )
 from .rates import Compounding
@@ -763,8 +763,8 @@ def run_multicurve(arguments: argparse.Namespace) -> dict[str, object]:
         end = add_months(pillar.day, months, keep_end_of_month=True)
         if end > forecast.curve.pillars[-1].day:
             continue
-        projected = forward_rate(forecast.curve, pillar.day, end, solving.basis)
-        discounted = forward_rate(discounting.curve, pillar.day, end, solving.basis)
+        projected = projected_forward(forecast.curve, pillar.day, end, solving.basis)
+        discounted = projected_forward(discounting.curve, pillar.day, end, solving.basis)
         spreads.append(
             {
                 "start": pillar.day.isoformat(),
