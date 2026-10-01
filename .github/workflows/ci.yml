@@ -182,3 +182,11 @@ jobs:
             --basis ACT_365F --index examples/cpi.txt --maturity 2031-01-05 \
             --coupon 0.015 --base-index 100.5 --issued 2019-01-05 \
             --projection 0.02 --real-yield 0.005 > /dev/null
+          tenor multicurve examples/ois.txt --reference 2026-01-15 \
+            --basis ACT_365F --forecast examples/forecast.txt \
+            --maturity 2036-01-15
+          tenor multicurve examples/ois.txt --reference 2026-01-15 \
+            --basis ACT_365F --forecast examples/basis.txt \
+            --flat-frequency SEMI_ANNUAL
+          tenor --json multicurve examples/ois.txt --reference 2026-01-15 \
+            --basis ACT_365F --forecast examples/forecast.txt > /dev/null

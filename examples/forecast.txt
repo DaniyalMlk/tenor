@@ -1,0 +1,10 @@
+# Quotes on the three-month index, to be forecast off a curve of its own and
+# discounted off the one in ois.txt. A 'forward' is one period of the index; a
+# 'swap' is a par rate on it. Nothing in here is a statement about discounting.
+forward  2026-01-15  2026-04-15  0.0312  ACT_360
+swap     2027-01-15  0.0332
+swap     2028-01-17  0.0346
+swap     2029-01-15  0.0359
+swap     2031-01-15  0.0373
+swap     2033-01-17  0.0382
+swap     2036-01-15  0.0389
