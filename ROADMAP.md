@@ -355,3 +355,82 @@ would handle a case that cannot arise: such a bond has redeemed before delivery
 and is refused. The refusal is the proof, and the test sweeps every maturity for
 a month either side of the delivery month at a daily step looking for the
 counterexample.
+
+## Phase 13 — Discounting and forecasting, separated
+
+- [x] A forecast index — tenor, day count, calendar, rolling rule and payment
+      lag — and the simply compounded forward it implies, read off a projection
+      curve in the index's own day count
+- [x] A floating leg projected on one curve, discounted on another, with a
+      spread, reporting every period's forward and discount factor rather than
+      only the total
+- [x] A par swap that answers how far off par it is against the *pair* of
+      curves, so pricing and bootstrapping remain the same code
+- [x] The telescoping identity as a test: forty projected coupons against the
+      single-curve leg's one subtraction, agreeing to 7.2e-16
+- [x] A projection bootstrap taking the discount curve as given, sequential then
+      swept, with every quote repricing to 1e-16
+- [x] A tenor basis swap, and the longer tenor's curve solved out of the quoted
+      spreads with the shorter one taken as known
+- [x] Risk split into a discount response and a forecast response, in money
+      rather than in years, attributed across buckets that add back to the
+      parallel shifts
+- [x] A command-line entry point over two quote files, reporting the forward
+      basis between the curves and the split
+
+What the identity actually needs, which is narrower than it looked. The
+cancellation that collapses a floating leg to `P(start) - P(maturity)` is
+between one period's `P(end)` and the next period's `P(start)`, so it needs the
+payment to land on the accrual end. The rolling convention was the suspect and
+it is innocent: under modified following a period ending on a Saturday rolls to
+the Monday and the payment rolls with it, so the dates still meet and the
+agreement is the 7.2e-16 above. A payment lag is the culprit, because it moves
+the payment without moving the accrual. At the two business days an
+overnight-indexed leg settles on, the gap is 0.095 basis points of par rate, and
+at five days 0.262. So the lag is an explicit field that defaults to zero, and
+that zero is load-bearing.
+
+What the discount curve is worth, which is the reverse of the usual telling.
+Separating the curves is introduced as the thing that repriced swaps, and for a
+*par* rate it does almost nothing: a 100 basis point shift to the projection
+curve moves the ten-year par rate by 101.62 basis points and the same shift to
+the discount curve moves it by **-0.12** — the other way, and smaller by a
+factor of 843. A par rate is a discount-weighted average of the forwards the leg
+projects, so the projection curve moves every term and the discount curve only
+reweights them, and on an upward-sloping curve heavier discounting tilts the
+weights towards the earlier and lower forwards. On a swap that is *not* at par
+the position reverses: a ten-year swap struck 100 basis points off the market
+moves 4.67% of its own mark under that discount shift, against the 0.031% the
+par rate's level moves. Third-order for a new trade, first-order for a book of
+old ones.
+
+The basis pass-through factorises exactly, which is the check worth having. A
+flat 20 basis point lift to every projected forward raises the ten-year par rate
+by 20.29 basis points, a ratio of 1.0146 rather than one. Two reasons pull in
+opposite directions: the legs' annuities stand in the ratio 1.0191, actual/360
+against 30/360, and a flat shift to a continuously compounded curve lifts a
+simply compounded quarterly forward by 0.9956 of itself. The product is
+1.014643 against a measured 1.014643, agreeing to 5.8e-15 — a decomposition
+rather than a story that comes out near the right size.
+
+And a curve that reprices every quote is not the curve that produced them. Fed
+par rates generated off a known projection curve, the bootstrap recovers it to
+within 0.03 basis points of zero rate beyond a year and sits **5.30 basis
+points** away at 0.49 years, in the gap between the three-month forward quote and
+the one-year swap where no input reaches. The same hole shows in the basis curve:
+tenor basis spreads of 5 to 9 basis points with nothing pinning the short end
+imply a 16.87 basis point forward basis over the first period, three times the
+quote it was spread backwards out of. One forward quote on the long index puts it
+at 5.00.
+
+Four defects, all in the tests. The forward-rate identity was written with the
+two discount factors the wrong way round; two annuity guards were asserted
+against a curve at 1e-300, where the product does not underflow and the guard
+cannot fire, rather than at 5e-324, where it does; and a difference of two sums
+of forty terms was held to one ulp rather than three. Two defects in the code,
+both found by running the command line rather than the library: a payment lag
+puts a leg's final flow past a curve quoted to its maturity, which arrived as an
+unexplained off-curve error out of the pillar seeding, and the forward lines in a
+basis file were being dropped when the basis quotes were adapted to the
+one-unknown protocol — which no repricing check can see, because the curve
+reprices whatever it was actually handed.
