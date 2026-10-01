@@ -15,6 +15,19 @@ a comment:
 
 Dates are ISO. The start date of a deposit or a swap is the curve's reference
 date; a future carries both of its own, since it does not start today.
+
+``multicurve`` takes a second file in the same shape, of quotes on the index
+being forecast rather than on the curve being discounted:
+
+    forward  2026-01-15  2026-04-15  0.0330   [basis]
+    swap     2036-01-15  0.0390
+    basis    2031-01-15  0.0008    [flat frequency]
+
+A ``forward`` is one period of the index. A ``swap`` is a par rate on it,
+discounted off the curve the first file built. A ``basis`` is a tenor basis
+spread quoted on the index against a longer one paying flat, and it solves the
+*longer* tenor's curve, so a file mixing ``swap`` and ``basis`` lines is asking
+for two different curves at once and is refused.
 """
 
 from __future__ import annotations
@@ -63,9 +76,20 @@ from .lattice import (
     option_cost,
     steps_between,
 )
+from .multicurve import (
+    BasisSwap,
+    DualSwap,
+    FlatLegOf,
+    ForecastIndex,
+    ForecastQuote,
+    IndexForward,
+    bootstrap_forecast,
+    forward_rate,
+    split_risk,
+)
 from .rates import Compounding
 from .risk import buckets_from, instrument_risk, key_rates, level, shape_duration
-from .schedule import Frequency
+from .schedule import Frequency, add_months
 from .spread import i_spread, z_spread
 
 
@@ -570,6 +594,222 @@ def run_option(arguments: argparse.Namespace) -> dict[str, object]:
 
 
 # -- the front door -----------------------------------------------------------
+
+
+def parse_forecast_quotes(
+    text: str,
+    reference: date,
+    index: ForecastIndex,
+    *,
+    flat_frequency: Frequency = Frequency.SEMI_ANNUAL,
+) -> tuple[list[ForecastQuote], list[BasisSwap]]:
+    """Parse quotes on the index being forecast, one per line.
+
+    Returns the one-unknown quotes and the basis quotes separately, and exactly
+    one of the two lists is ever non-empty, because mixing them is refused
+    rather than resolved. A par swap rate is a statement about *this* index's
+    curve; a tenor basis spread is a statement about a longer index's curve
+    against this one taken as known. Both in one file asks for two curves from
+    one solve, and the answer would be neither of them. They are returned apart
+    rather than in one list because a basis swap needs three curves to price and
+    the others need two, so they are not the same kind of thing.
+    """
+    quotes: list[ForecastQuote] = []
+    spreads: list[BasisSwap] = []
+    kinds: set[str] = set()
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        kind = fields[0].lower()
+        try:
+            if kind == "forward":
+                basis = _basis(fields[4]) if len(fields) > 4 else index.basis
+                quotes.append(
+                    IndexForward(
+                        date.fromisoformat(fields[1]),
+                        date.fromisoformat(fields[2]),
+                        float(fields[3]),
+                        basis,
+                    )
+                )
+            elif kind == "swap":
+                quotes.append(
+                    DualSwap(
+                        effective=reference,
+                        maturity=date.fromisoformat(fields[1]),
+                        rate=float(fields[2]),
+                        index=index,
+                    )
+                )
+            elif kind == "basis":
+                frequency = (
+                    Frequency[fields[3].upper()] if len(fields) > 3 else flat_frequency
+                )
+                if frequency is index.tenor:
+                    raise BadInput(
+                        f"line {number}: the basis leg and the flat leg are both on "
+                        f"the {index.tenor.months}-month tenor, so the quote says "
+                        "nothing about either curve"
+                    )
+                spreads.append(
+                    BasisSwap(
+                        effective=reference,
+                        maturity=date.fromisoformat(fields[1]),
+                        spread=float(fields[2]),
+                        spread_index=index,
+                        flat_index=ForecastIndex(tenor=frequency, basis=index.basis),
+                    )
+                )
+            else:
+                raise BadInput(
+                    f"line {number}: {fields[0]!r} is not a forecast quote. Known "
+                    "kinds are forward, swap and basis."
+                )
+        except (IndexError, ValueError) as bad:
+            if isinstance(bad, BadInput):
+                raise
+            raise BadInput(f"line {number}: {raw.strip()!r} - {bad}") from bad
+        kinds.add(kind)
+    if not quotes and not spreads:
+        raise BadInput("the forecast quote file has no quotes in it")
+    if "basis" in kinds and "swap" in kinds:
+        raise BadInput(
+            "the forecast file mixes par swap rates with tenor basis spreads. A "
+            "swap rate pins this index's own curve and a basis spread pins a "
+            "longer index's curve against it, so the two together ask one solve "
+            "for two curves. Build the index curve from the swaps first, then the "
+            "basis curve from the spreads against it."
+        )
+    return quotes, spreads
+
+
+def run_multicurve(arguments: argparse.Namespace) -> dict[str, object]:
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    index = ForecastIndex(
+        tenor=Frequency[arguments.index_tenor.upper()],
+        basis=_basis(arguments.index_basis),
+        payment_lag=arguments.payment_lag,
+    )
+    flat_frequency = Frequency[arguments.flat_frequency.upper()]
+    quotes, basis_quotes = parse_forecast_quotes(
+        Path(arguments.forecast).read_text(),
+        reference,
+        index,
+        flat_frequency=flat_frequency,
+    )
+    short_leg_on = "itself"
+    if basis_quotes:
+        # A basis spread solves the *longer* tenor's curve against the short
+        # one, which has to be known first -- and the only curve this command
+        # has been given is the discount curve, so that is what the short leg
+        # is projected off. It is an assumption rather than a quote, so it is
+        # reported in the payload instead of being left for the reader to
+        # infer from a number that looks like a basis and is partly a proxy.
+        solving = ForecastIndex(tenor=flat_frequency, basis=index.basis)
+        short_leg_on = "the discount curve, for want of a quote on it"
+        # Any forward lines in a basis file are quotes on the curve being
+        # solved for, so they go in alongside rather than on the floor: a
+        # dropped quote is the one failure mode a repricing check cannot see,
+        # because the curve reprices everything it was actually given.
+        forecast = bootstrap_forecast(
+            reference,
+            [*quotes, *[FlatLegOf(one, discounting.curve) for one in basis_quotes]],
+            discount=discounting.curve,
+            basis=_basis(arguments.basis),
+            interpolation=_interpolation(arguments.interpolation),
+        )
+    else:
+        solving = index
+        forecast = bootstrap_forecast(
+            reference,
+            quotes,
+            discount=discounting.curve,
+            basis=_basis(arguments.basis),
+            interpolation=_interpolation(arguments.interpolation),
+        )
+
+    payload: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "index": solving.name,
+        "discount_curve": {
+            "sweeps": discounting.sweeps,
+            "worst_repricing_error": discounting.worst_error,
+            "reprices": discounting.reprices(),
+        },
+        "forecast_curve": {
+            "solving_for": f"{solving.tenor.months}m index",
+            "quotes_used": len(forecast),
+            "short_leg_projected_on": short_leg_on,
+            "sweeps": forecast.sweeps,
+            "worst_repricing_error": forecast.worst_error,
+            "reprices": forecast.reprices(),
+            "pillars": [
+                {
+                    "date": pillar.day.isoformat(),
+                    "years": round(pillar.time, 6),
+                    "discount": pillar.discount,
+                }
+                for pillar in forecast.curve.pillars[1:]
+            ],
+        },
+    }
+
+    months = solving.tenor.months
+    spreads = []
+    for pillar in forecast.curve.pillars[1:]:
+        end = add_months(pillar.day, months, keep_end_of_month=True)
+        if end > forecast.curve.pillars[-1].day:
+            continue
+        projected = forward_rate(forecast.curve, pillar.day, end, solving.basis)
+        discounted = forward_rate(discounting.curve, pillar.day, end, solving.basis)
+        spreads.append(
+            {
+                "start": pillar.day.isoformat(),
+                "end": end.isoformat(),
+                "projected": projected,
+                "discounting": discounted,
+                "basis_points": (projected - discounted) * 1e4,
+            }
+        )
+    payload["forward_basis"] = spreads
+
+    if arguments.maturity:
+        maturity = date.fromisoformat(arguments.maturity)
+        swap = DualSwap(
+            effective=reference,
+            maturity=maturity,
+            rate=0.0,
+            index=solving,
+            frequency=Frequency[arguments.fixed_frequency.upper()],
+            basis=_basis(arguments.fixed_basis),
+        )
+        dual = swap.par_rate(discounting.curve, forecast.curve)
+        single = swap.par_rate(discounting.curve, discounting.curve)
+        struck = DualSwap(
+            effective=reference,
+            maturity=maturity,
+            rate=dual,
+            index=solving,
+            frequency=Frequency[arguments.fixed_frequency.upper()],
+            basis=_basis(arguments.fixed_basis),
+        )
+        split = split_risk(struck.par_error, discounting.curve, forecast.curve)
+        payload["swap"] = {
+            "maturity": maturity.isoformat(),
+            "par_rate": dual,
+            "par_rate_on_one_curve": single,
+            "basis_points_from_separating": (dual - single) * 1e4,
+            "risk": {
+                "from_the_discount_curve": split.discount,
+                "from_the_forecast_curve": split.forecast,
+                "from_both_together": split.joint,
+                "cross_term": split.crossed,
+            },
+        }
+    return payload
 
 
 def _report(payload: dict[str, object], as_json: bool) -> str:
@@ -1237,6 +1477,79 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     futures.set_defaults(run=run_futures)
+
+    multicurve = subcommands.add_parser(
+        "multicurve",
+        help="forecast on one curve and discount on another",
+        description=(
+            "Builds the discount curve from --quotes, then solves a projection "
+            "curve out of --forecast against it, and reports the forward basis "
+            "between the two. The order is the market's: discounting is settled "
+            "first, from overnight-indexed swaps, and the forecast curve is built "
+            "on top of it. With --maturity it also prices a par swap both ways "
+            "and splits its risk between the curves, which is the number worth "
+            "looking at: on a par rate the discount curve is worth a fraction of "
+            "a basis point and the forecast curve is worth all of it."
+        ),
+    )
+    shared(multicurve)
+    multicurve.add_argument(
+        "--forecast",
+        required=True,
+        help="a file of forward, swap or basis quotes on the index",
+    )
+    multicurve.add_argument(
+        "--index-tenor",
+        dest="index_tenor",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+        help="reset tenor of the index being forecast",
+    )
+    multicurve.add_argument(
+        "--index-basis",
+        dest="index_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+        help="day count the index accrues on, which is not the fixed leg's",
+    )
+    multicurve.add_argument(
+        "--payment-lag",
+        dest="payment_lag",
+        type=int,
+        default=0,
+        help=(
+            "business days between a period's end and its payment. Zero is the "
+            "money-market convention and the only value under which a leg "
+            "forecast on its own discount curve telescopes"
+        ),
+    )
+    multicurve.add_argument(
+        "--flat-frequency",
+        dest="flat_frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+        help="tenor of the flat leg of a basis quote, whose curve is solved for",
+    )
+    multicurve.add_argument(
+        "--maturity",
+        default=None,
+        help="also price a par swap to this date and split its risk, ISO",
+    )
+    multicurve.add_argument(
+        "--fixed-frequency",
+        dest="fixed_frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+        help="payment frequency of that swap's fixed leg",
+    )
+    multicurve.add_argument(
+        "--fixed-basis",
+        dest="fixed_basis",
+        default=Basis.THIRTY_360_BOND.name,
+        choices=[one.name for one in Basis],
+        help="day count that swap's fixed leg accrues on",
+    )
+    multicurve.set_defaults(run=run_multicurve)
 
     return root
 

@@ -327,6 +327,23 @@ class FloatingLeg:
                 "The first fixing is then history, which a curve cannot supply; price "
                 "it with the known fixing instead."
             )
+        last = schedule[-1].payment
+        horizon = discount.pillars[-1].day
+        if last > horizon:
+            lagged = ""
+            if last != schedule[-1].adjusted_end:
+                lagged = (
+                    f" The accrual ends on {schedule[-1].adjusted_end.isoformat()}, "
+                    f"which the curve does cover, so it is the "
+                    f"{self.index.payment_lag}-business-day payment lag that puts the "
+                    "flow outside it."
+                )
+            raise BadForecast(
+                f"leg {self.name} pays last on {last.isoformat()}, past the discount "
+                f"curve's last pillar {horizon.isoformat()}.{lagged} A curve quoted "
+                "to a leg's maturity does not reach a leg's final payment; quote the "
+                "pillar past the payment instead."
+            )
         made = []
         for period in schedule:
             accrual = year_fraction(
@@ -823,6 +840,17 @@ def bootstrap_forecast(
         )
     ordered = _ordered_quotes(reference, quotes)
     days = [one.final_date for one in ordered]
+    horizon = discount.pillars[-1].day
+    if days[-1] > horizon:
+        beyond = [one.name for one in ordered if one.final_date > horizon]
+        raise BadForecast(
+            f"{len(beyond)} of {len(ordered)} quotes settle past the discount "
+            f"curve's last pillar {horizon.isoformat()}, the furthest on "
+            f"{days[-1].isoformat()}: {', '.join(beyond)}. A projection pillar is "
+            "seeded from the discount factor at its own date, so the discount curve "
+            "has to reach every quote's final payment -- which is later than its "
+            "maturity whenever the index pays with a lag."
+        )
     factors = [discount.discount(day) for day in days]
     solutions: list[Root] = [
         Root(factor, math.nan, 0, (factor, factor), converged=False)

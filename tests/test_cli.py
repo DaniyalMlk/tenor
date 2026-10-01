@@ -23,12 +23,19 @@ import pytest
 
 from tenor.bond import Bond
 from tenor.bootstrap import bootstrap
-from tenor.cli import BadInput, main, parse_index, parse_quotes
+from tenor.cli import (
+    BadInput,
+    main,
+    parse_forecast_quotes,
+    parse_index,
+    parse_quotes,
+)
 from tenor.daycount import Basis
 from tenor.floating import FloatingNote
 from tenor.horizon import horizon_return
 from tenor.inflation import LinkedBond
 from tenor.instruments import Deposit, Future, Swap
+from tenor.multicurve import DualSwap, ForecastIndex, IndexForward
 from tenor.schedule import Frequency
 
 REFERENCE = date(2021, 1, 5)
@@ -996,3 +1003,252 @@ def test_the_text_report_renders_the_credit_bond_block_too(
     text = capsys.readouterr().out
     assert "bond:\n  maturity: 2026-01-05" in text
     assert "'risky_price'" not in text
+
+
+# -- multicurve ---------------------------------------------------------------
+
+OIS_QUOTES = """
+deposit  2026-04-15  0.0290  ACT_360
+swap     2027-01-15  0.0310  ANNUAL  ACT_365F
+swap     2028-01-17  0.0325  ANNUAL  ACT_365F
+swap     2031-01-15  0.0352  ANNUAL  ACT_365F
+swap     2036-01-15  0.0368  ANNUAL  ACT_365F
+swap     2037-01-15  0.0371  ANNUAL  ACT_365F
+"""
+
+FORECAST_QUOTES = """
+# three-month index: one forward at the front, par swaps beyond
+forward  2026-01-15  2026-04-15  0.0312  ACT_360
+swap     2027-01-15  0.0332
+swap     2028-01-17  0.0346
+swap     2031-01-15  0.0373
+swap     2036-01-15  0.0389
+"""
+
+BASIS_QUOTES_FILE = """
+forward  2026-01-15  2026-07-15  0.0315  ACT_360
+basis    2027-01-15  0.0005
+basis    2031-01-15  0.0008
+basis    2036-01-15  0.0009
+"""
+
+
+@pytest.fixture
+def ois_file(tmp_path: Path) -> str:
+    path = tmp_path / "ois.txt"
+    path.write_text(OIS_QUOTES)
+    return str(path)
+
+
+def multicurve_arguments(ois: str, forecast: str) -> list[str]:
+    return [
+        "multicurve",
+        ois,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--forecast",
+        forecast,
+    ]
+
+
+def test_the_forecast_file_parses_all_three_kinds() -> None:
+    index = ForecastIndex(tenor=Frequency.QUARTERLY, basis=Basis.ACT_360)
+    quotes, spreads = parse_forecast_quotes(
+        """
+        forward 2026-01-15 2026-04-15 0.0312 ACT_360
+        swap    2036-01-15 0.0389
+        """,
+        date(2026, 1, 15),
+        index,
+    )
+    assert isinstance(quotes[0], IndexForward)
+    assert isinstance(quotes[1], DualSwap)
+    assert quotes[0].basis is Basis.ACT_360
+    assert quotes[0].rate == pytest.approx(0.0312)
+    assert spreads == []
+
+    quotes, spreads = parse_forecast_quotes(
+        "basis 2031-01-15 0.0008", date(2026, 1, 15), index
+    )
+    assert quotes == []
+    assert spreads[0].spread == pytest.approx(0.0008)
+    assert spreads[0].flat_index.tenor is Frequency.SEMI_ANNUAL
+
+
+def test_the_forecast_file_refuses_mixing_swaps_with_basis_spreads() -> None:
+    with pytest.raises(BadInput, match="two curves"):
+        parse_forecast_quotes(
+            """
+            swap  2036-01-15 0.0389
+            basis 2031-01-15 0.0008
+            """,
+            date(2026, 1, 15),
+            ForecastIndex(),
+        )
+
+
+def test_the_forecast_file_refuses_an_unknown_kind() -> None:
+    with pytest.raises(BadInput, match="not a forecast quote"):
+        parse_forecast_quotes("wibble 2027-01-15 0.03", date(2026, 1, 15), ForecastIndex())
+
+
+def test_the_forecast_file_refuses_an_empty_file() -> None:
+    with pytest.raises(BadInput, match="no quotes in it"):
+        parse_forecast_quotes("# nothing but a comment\n", date(2026, 1, 15), ForecastIndex())
+
+
+def test_the_forecast_file_names_the_line_of_a_short_quote() -> None:
+    with pytest.raises(BadInput, match="line 2"):
+        parse_forecast_quotes(
+            "swap 2036-01-15 0.0389\nforward 2026-01-15\n",
+            date(2026, 1, 15),
+            ForecastIndex(),
+        )
+
+
+def test_the_forecast_file_refuses_a_basis_against_its_own_tenor() -> None:
+    with pytest.raises(BadInput, match="says nothing"):
+        parse_forecast_quotes(
+            "basis 2031-01-15 0.0008 QUARTERLY",
+            date(2026, 1, 15),
+            ForecastIndex(tenor=Frequency.QUARTERLY),
+        )
+
+
+def test_multicurve_recovers_the_quoted_par_rate_and_splits_the_risk(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forecast = tmp_path / "forecast.txt"
+    forecast.write_text(FORECAST_QUOTES)
+    arguments = multicurve_arguments(ois_file, str(forecast))
+    assert main(["--json", *arguments, "--maturity", "2036-01-15"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["forecast_curve"]["reprices"] is True
+    assert payload["forecast_curve"]["quotes_used"] == 5
+    assert payload["discount_curve"]["reprices"] is True
+    # The ten-year quote goes in and comes back out.
+    assert payload["swap"]["par_rate"] == pytest.approx(0.0389, abs=1e-12)
+    assert payload["swap"]["par_rate_on_one_curve"] < payload["swap"]["par_rate"]
+    assert payload["swap"]["basis_points_from_separating"] == pytest.approx(
+        24.15, abs=0.05
+    )
+    # Every quoted forward basis is in the twenty-something basis point band the
+    # quotes imply, which is the check that the two curves were not swapped.
+    assert all(20.0 < one["basis_points"] < 30.0 for one in payload["forward_basis"])
+
+    risk = payload["swap"]["risk"]
+    assert abs(risk["from_the_forecast_curve"]) > 100 * abs(
+        risk["from_the_discount_curve"]
+    )
+    assert risk["cross_term"] == pytest.approx(
+        risk["from_both_together"]
+        - risk["from_the_discount_curve"]
+        - risk["from_the_forecast_curve"],
+        rel=1e-9,
+    )
+
+
+def test_multicurve_omits_the_swap_block_without_a_maturity(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forecast = tmp_path / "forecast.txt"
+    forecast.write_text(FORECAST_QUOTES)
+    assert main(["--json", *multicurve_arguments(ois_file, str(forecast))]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "swap" not in payload
+    assert payload["forward_basis"]
+
+
+def test_multicurve_uses_the_forwards_in_a_basis_file_too(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dropped quote is the failure a repricing check cannot see.
+
+    The curve reprices whatever it was handed, so leaving a quote on the floor
+    shows up as a clean fit to a smaller set. The count is the only thing that
+    catches it.
+    """
+    forecast = tmp_path / "basis.txt"
+    forecast.write_text(BASIS_QUOTES_FILE)
+    assert main(["--json", *multicurve_arguments(ois_file, str(forecast))]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["forecast_curve"]["quotes_used"] == 4
+    assert payload["forecast_curve"]["solving_for"] == "6m index"
+    assert payload["forecast_curve"]["reprices"] is True
+    assert "for want of a quote" in payload["forecast_curve"]["short_leg_projected_on"]
+
+
+def test_multicurve_reports_the_assumption_it_makes_on_a_plain_index_curve(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forecast = tmp_path / "forecast.txt"
+    forecast.write_text(FORECAST_QUOTES)
+    assert main(["--json", *multicurve_arguments(ois_file, str(forecast))]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["forecast_curve"]["short_leg_projected_on"] == "itself"
+
+
+def test_multicurve_refuses_a_mixed_forecast_file(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forecast = tmp_path / "mixed.txt"
+    forecast.write_text(FORECAST_QUOTES + BASIS_QUOTES_FILE)
+    assert main(multicurve_arguments(ois_file, str(forecast))) == 2
+    assert "two curves" in capsys.readouterr().err
+
+
+def test_multicurve_refuses_a_lag_that_pays_past_the_curve(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The curve is quoted to the leg's maturity, not to its final payment.
+
+    Found by writing the lag test against the ten-year point, which is the last
+    pillar: two business days later there is no curve, and the refusal that
+    came back named the missing pillar without naming the lag that caused it.
+    It names both now.
+    """
+    forecast = tmp_path / "forecast.txt"
+    forecast.write_text(FORECAST_QUOTES)
+    arguments = multicurve_arguments(ois_file, str(forecast))
+    assert (
+        main([*arguments, "--maturity", "2036-01-15", "--payment-lag", "300"]) == 2
+    )
+    message = capsys.readouterr().err
+    assert "settle past the discount curve" in message
+    assert "pays with a lag" in message
+
+
+def test_multicurve_carries_a_payment_lag_through_to_the_par_rate(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The lag shows in the single-curve rate, not in the dual-curve one.
+
+    This test was first written against ``par_rate`` and asserted nothing: the
+    forecast curve is bootstrapped from the same quote under the same lag, so
+    the quote round-trips to the last bit whatever the lag is. The number the
+    lag can be seen in is the rate the leg would have on the discount curve
+    alone, which no quote has been fitted to.
+    """
+    forecast = tmp_path / "forecast.txt"
+    forecast.write_text(FORECAST_QUOTES)
+    arguments = multicurve_arguments(ois_file, str(forecast))
+    assert main(["--json", *arguments, "--maturity", "2036-01-15"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["swap"]["par_rate"] == pytest.approx(0.0389, abs=1e-12)
+    prompt = payload["swap"]["par_rate_on_one_curve"]
+
+    assert (
+        main(["--json", *arguments, "--maturity", "2036-01-15", "--payment-lag", "2"])
+        == 0
+    )
+    lagged = json.loads(capsys.readouterr().out)
+    # The quote still round-trips, because the curve was fitted under the lag.
+    assert lagged["swap"]["par_rate"] == pytest.approx(0.0389, abs=1e-12)
+    # Paying two days late is worth less, so the fair fixed rate is lower.
+    assert lagged["swap"]["par_rate_on_one_curve"] < prompt
+    assert (prompt - lagged["swap"]["par_rate_on_one_curve"]) * 1e4 == pytest.approx(
+        0.095, abs=0.03
+    )
