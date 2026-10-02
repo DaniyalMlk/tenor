@@ -1252,3 +1252,134 @@ def test_multicurve_carries_a_payment_lag_through_to_the_par_rate(
     assert (prompt - lagged["swap"]["par_rate_on_one_curve"]) * 1e4 == pytest.approx(
         0.095, abs=0.03
     )
+
+
+# -- swaption -----------------------------------------------------------------
+
+LONG_OIS = OIS_QUOTES + """
+swap     2041-01-15  0.0372  ANNUAL  ACT_365F
+swap     2046-01-15  0.0374  ANNUAL  ACT_365F
+"""
+
+LONG_FORECAST = FORECAST_QUOTES + """
+swap     2041-01-15  0.0393
+swap     2046-01-15  0.0395
+"""
+
+
+@pytest.fixture
+def long_curves(tmp_path: Path) -> tuple[str, str]:
+    ois = tmp_path / "ois-long.txt"
+    ois.write_text(LONG_OIS)
+    forecast = tmp_path / "forecast-long.txt"
+    forecast.write_text(LONG_FORECAST)
+    return str(ois), str(forecast)
+
+
+def swaption_arguments(curves: tuple[str, str]) -> list[str]:
+    ois, forecast = curves
+    return [
+        "swaption",
+        ois,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--forecast",
+        forecast,
+        "--expiry",
+        "2036-01-15",
+        "--swap-maturity",
+        "2046-01-15",
+        "--volatility",
+        "0.20",
+    ]
+
+
+def test_swaption_reports_the_annuity_the_rate_and_both_sensitivities(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *swaption_arguments(long_curves)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["payoff"] == "payer"
+    assert payload["rate_option"] == "call"
+    # Struck at the forward by default, so there is no intrinsic.
+    assert payload["strike"] == pytest.approx(payload["forward_swap_rate"])
+    assert payload["intrinsic"] == 0.0
+    assert payload["annuity"] > 5.0
+    assert payload["value"] > 0.0
+    # Its own premium inverts back to the volatility it was priced at.
+    assert payload["implied_volatility_from_its_own_premium"] == pytest.approx(
+        0.20, rel=1e-9
+    )
+
+    shift = payload["discount_shift"]
+    # The option moves two orders of magnitude more than the rate it is on.
+    assert abs(shift["relative_change_in_value"]) > 100.0 * abs(
+        shift["relative_change_in_forward"]
+    )
+    assert shift["relative_change_in_value"] < 0.0
+    assert shift["relative_change_in_annuity"] < 0.0
+
+
+def test_swaption_prices_the_strip_beside_the_option(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *swaption_arguments(long_curves)]) == 0
+    strip = json.loads(capsys.readouterr().out)["strip"]
+    assert strip["periods"] == 40
+    assert strip["over_the_option"] > 0.0
+
+
+def test_swaption_takes_the_normal_convention_and_the_receiver(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = swaption_arguments(long_curves)
+    arguments[arguments.index("0.20")] = "0.008"
+    assert main(["--json", *arguments, "--normal", "--receiver"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["convention"] == "normal"
+    assert payload["payoff"] == "receiver"
+    assert payload["rate_option"] == "put"
+    assert payload["value"] > 0.0
+
+
+def test_swaption_refuses_a_basis_file_for_a_curve_it_does_not_want(
+    long_curves: tuple[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ois, _ = long_curves
+    basis = tmp_path / "basis.txt"
+    basis.write_text(BASIS_QUOTES_FILE)
+    assert (
+        main(
+            [
+                "swaption",
+                ois,
+                "--reference",
+                "2026-01-15",
+                "--basis",
+                "ACT_365F",
+                "--forecast",
+                str(basis),
+                "--expiry",
+                "2036-01-15",
+                "--swap-maturity",
+                "2046-01-15",
+                "--volatility",
+                "0.2",
+            ]
+        )
+        == 2
+    )
+    assert "solves a different index's curve" in capsys.readouterr().err
+
+
+def test_swaption_refuses_an_expiry_after_its_swap_starts(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = swaption_arguments(long_curves)
+    assert main([*arguments, "--effective", "2030-01-15"]) == 2
+    assert "already begun accruing" in capsys.readouterr().err
