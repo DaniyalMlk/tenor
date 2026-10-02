@@ -1253,6 +1253,75 @@ is 0.99993019 against a measured 0.99993019. The inequality is exact in the
 mathematics and violated in the conventions, by precisely the amount the
 conventions differ.
 
+## One parameter set, and the identities that check it
+
+`tenor.options` prices a swaption on the annuity measure and takes the
+volatility as an input. `tenor.lattice` prices a callable bond on a tree and
+says nothing about a swaption. `tenor.hullwhite` is the smallest thing that
+prices both from one specification:
+
+```python
+from tenor import HullWhite, swaption_price, reprices_curve
+
+model = HullWhite(a=0.08, sigma=0.009)
+reprices_curve(curve, model)        # 0.0 -- an identity, not a fit
+trade = swaption_price(curve, model, option, reference)
+trade.jamshidian, trade.quadrature  # two routes
+trade.gap                           # -8.9e-16 between them
+```
+
+The short rate is Gaussian with its drift fitted to the initial curve through
+`A(t,T)`, so the model reprices every discount factor it was given *by
+construction*. Measured across a seventeen-pillar humped curve at every mean
+reversion from 0.01 to 0.5 and every volatility to 2%, the worst relative error
+is exactly **0.0**.
+
+### The forward-measure mean is implied, and comes out exact
+
+Pricing by quadrature needs the law of `r(T)` under the `T`-forward measure.
+Rather than copy a drift adjustment, `forward_measure` implies it from the fact
+that every forward bond price is a martingale under that measure — which
+*over-determines* it, since each probe maturity gives its own answer. The
+answers agree to **0.0**, because the terms cancel identically: the `B²v/2`
+from the lognormal expectation is exactly the convexity term inside `A`,
+leaving `E^T[r(T)] = f(0,T)`. The forward-measure expectation of the future
+short rate is the instantaneous forward, with nothing left over.
+
+### The obvious quadrature is wrong by twelve per cent
+
+A Gaussian weight invites Gauss-Hermite, and a 64-point rule got the
+near-the-money prices to five digits and a deep out-of-the-money one wrong by
+**1.25e-01 relative**. A Gauss rule converges at that rate on a kink and an
+option payoff is nothing but a kink. The symptom was misleading: both routes
+agreed on the payer-less-receiver *difference* to 1e-12 while both were wrong,
+because the error is in the straddle and cancels in parity, so every identity
+still held and only the level was out. Putting the exercise boundary at a panel
+edge of a composite Gauss-Legendre rule turned five digits into fifteen, and
+the two routes now agree to **3.1e-14** over eighteen combinations of expiry,
+coupon and side.
+
+### Mean reversion is an argument, because one quote cannot choose
+
+A ten-into-ten payer at its forward is repriced exactly at every reversion from
+0.01 to 0.30: the refitted volatility runs 0.492% to 3.226%, a factor of
+**6.55**, with a refit error of at most 2.2e-16 at every point. A routine
+fitting both parameters to one quote would return whichever point on that ridge
+its guess fell nearest and report a residual of zero either way. What separates
+them is the term structure — the pair fitted to the ten-year expiry prices a
+one-year-into-ten-year from **23.4% below to 57.2% above** the `a = 0.08`
+answer:
+
+```bash
+tenor hullwhite ois.txt --reference 2026-01-15 --basis ACT_365F \
+  --expiry 2036-01-15 --swap-maturity 2046-01-15 \
+  --mean-reversion 0.08 --volatility 0.009 --ridge 0.02 0.08 0.3
+```
+
+And the model's native convention is the normal one, measurably: its own prices
+imply a normal volatility moving 1.06 basis points on a level of 45.55 across
+strikes from 60% to 140% of the forward — 2.33% wide, and monotone rather than
+curved — against the lognormal convention's 41.91% on the same prices.
+
 ## Development
 
 ```bash
