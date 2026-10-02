@@ -50,7 +50,7 @@ from .credit import (
     triangle_hazard,
 )
 from .curve import Interpolation
-from .daycount import Basis
+from .daycount import Basis, year_fraction
 from .floating import FloatingNote
 from .futures import (
     DEFAULT_DIGITS,
@@ -60,6 +60,15 @@ from .futures import (
     delivery_switch,
 )
 from .horizon import horizon_return
+from .hullwhite import (
+    Calibration,
+    HullWhite,
+    Quote,
+    calibrate,
+    forward_measure,
+    reprices_curve,
+    swaption_price,
+)
 from .inflation import (
     LinkedBond,
     ReferenceIndex,
@@ -952,6 +961,155 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
     return payload
 
 
+def run_hullwhite(arguments: argparse.Namespace) -> dict[str, object]:
+    """A swaption under Hull-White, both ways, with the model's own diagnostics.
+
+    The three numbers to read first are not prices. The curve repricing error
+    says whether the drift fit is intact — it is an identity and must be zero.
+    The spread across probe maturities says whether ``A`` and ``B`` agree with
+    each other. And the gap between the decomposition and the quadrature says
+    whether Jamshidian's theorem is being applied correctly, because the two
+    share nothing but the exercise boundary.
+
+    The volatility is either given or fitted to a premium. The mean reversion
+    is always given: one quote cannot separate the two, and the report shows
+    what that costs by repricing the same option at the reversion either side.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    curve = discounting.curve
+    expiry = date.fromisoformat(arguments.expiry)
+    effective = (
+        date.fromisoformat(arguments.effective) if arguments.effective else expiry
+    )
+    maturity = date.fromisoformat(arguments.swap_maturity)
+    payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
+    frequency = Frequency[arguments.fixed_frequency.upper()]
+    fixed_basis = _basis(arguments.fixed_basis)
+    time_basis = _basis(arguments.time_basis)
+
+    if (arguments.volatility is None) == (arguments.premium is None):
+        raise BadInput("give exactly one of --volatility and --premium")
+
+    def make(strike: float) -> Swaption:
+        return Swaption(
+            expiry=expiry,
+            effective=effective,
+            maturity=maturity,
+            strike=strike,
+            payoff=payoff,
+            frequency=frequency,
+            basis=fixed_basis,
+        )
+
+    probe = make(0.03)
+    schedule = probe.swap.fixed_schedule()
+    annuity = sum(
+        year_fraction(period.start, period.end, fixed_basis)
+        * curve.discount(period.payment)
+        for period in schedule
+    )
+    forward = (
+        curve.discount(schedule[0].adjusted_start) - curve.discount(schedule[-1].payment)
+    ) / annuity
+    strike = arguments.strike if arguments.strike is not None else forward
+    option = make(strike)
+
+    if arguments.volatility is not None:
+        model = HullWhite(a=arguments.mean_reversion, sigma=arguments.volatility)
+        fit: Calibration | None = None
+    else:
+        fit = calibrate(
+            curve,
+            [Quote(option, arguments.premium)],
+            reference,
+            mean_reversion=arguments.mean_reversion,
+            basis=time_basis,
+        )
+        model = fit.model
+
+    trade = swaption_price(curve, model, option, reference, time_basis)
+    years = year_fraction(reference, expiry, time_basis)
+    measure = forward_measure(curve, model, years)
+
+    payload: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "expiry": expiry.isoformat(),
+        "payoff": payoff.value,
+        "mean_reversion": model.a,
+        "volatility": model.sigma,
+        "forward_swap_rate": forward,
+        "strike": strike,
+        "annuity": annuity,
+        "years_to_expiry": years,
+        "value": trade.price,
+        "curve_repricing_error": reprices_curve(curve, model),
+        "forward_measure": {
+            "mean": measure.mean,
+            "instantaneous_forward": curve.instantaneous_forward(years),
+            "standard_deviation": measure.standard_deviation,
+            "probe_spread": measure.spread,
+        },
+        "routes": {
+            "jamshidian": trade.jamshidian,
+            "quadrature": trade.quadrature,
+            "relative_gap": trade.gap,
+            "reference_rate": trade.reference_rate,
+            "monotone": trade.option.is_monotone,
+        },
+    }
+    if fit is not None:
+        payload["calibration"] = {
+            "premium": arguments.premium,
+            "errors": list(fit.errors),
+            "worst": fit.worst,
+            "iterations": fit.iterations,
+        }
+
+    # What the unidentified pair costs: the same option at the reversion either
+    # side, refitted to this price, and what that pair does to a nearer expiry.
+    if arguments.ridge:
+        ridge: list[dict[str, float]] = []
+        for reversion in arguments.ridge:
+            refit = calibrate(
+                curve,
+                [Quote(option, trade.price)],
+                reference,
+                mean_reversion=reversion,
+                basis=time_basis,
+            )
+            ridge.append(
+                {
+                    "mean_reversion": reversion,
+                    "volatility": refit.model.sigma,
+                    "refit_error": refit.worst,
+                }
+            )
+        payload["ridge"] = ridge
+
+    if arguments.normal_vol:
+        premium = trade.price / annuity
+        payload["implied"] = {
+            "normal": implied_volatility(
+                premium,
+                forward=forward,
+                strike=strike,
+                time=years,
+                payoff=payoff,
+                convention=Convention.NORMAL,
+            ),
+            "lognormal": implied_volatility(
+                premium,
+                forward=forward,
+                strike=strike,
+                time=years,
+                payoff=payoff,
+                convention=Convention.LOGNORMAL,
+            ),
+        }
+    return payload
+
+
 def _report(payload: dict[str, object], as_json: bool) -> str:
     if as_json:
         return json.dumps(payload, indent=2, default=str)
@@ -1780,6 +1938,96 @@ def parser() -> argparse.ArgumentParser:
         help="day count the volatility's time to expiry is measured in",
     )
     swaption.set_defaults(run=run_swaption)
+
+    hullwhite = subcommands.add_parser(
+        "hullwhite",
+        help="price a swaption under a calibrated short rate model",
+        description=(
+            "Prices a European swaption under Hull-White's one-factor model by "
+            "Jamshidian's decomposition and by quadrature over the terminal "
+            "short rate, and reports the gap between them along with the two "
+            "identities the model rests on: that it reprices the curve it was "
+            "given, and that every probe maturity implies the same "
+            "forward-measure mean. The mean reversion is an argument because "
+            "one quote cannot separate it from the volatility; --ridge shows "
+            "what that costs."
+        ),
+    )
+    shared(hullwhite)
+    hullwhite.add_argument("--expiry", required=True, help="the option's expiry, ISO")
+    hullwhite.add_argument(
+        "--swap-maturity",
+        dest="swap_maturity",
+        required=True,
+        help="when the underlying swap matures, ISO",
+    )
+    hullwhite.add_argument(
+        "--effective",
+        default=None,
+        help="when the underlying swap starts; defaults to the expiry",
+    )
+    hullwhite.add_argument(
+        "--strike",
+        type=float,
+        default=None,
+        help="the fixed rate as a decimal; defaults to the forward swap rate",
+    )
+    hullwhite.add_argument(
+        "--receiver", action="store_true", help="receive fixed; the default pays it"
+    )
+    hullwhite.add_argument(
+        "--mean-reversion",
+        dest="mean_reversion",
+        type=float,
+        required=True,
+        help="the model's a, in reciprocal years",
+    )
+    hullwhite.add_argument(
+        "--volatility",
+        type=float,
+        default=None,
+        help="the model's sigma, in absolute rate units per root year",
+    )
+    hullwhite.add_argument(
+        "--premium",
+        type=float,
+        default=None,
+        help="fit the volatility to this price instead of supplying one",
+    )
+    hullwhite.add_argument(
+        "--fixed-frequency",
+        dest="fixed_frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+    )
+    hullwhite.add_argument(
+        "--fixed-basis",
+        dest="fixed_basis",
+        default=Basis.THIRTY_360_BOND.name,
+        choices=[one.name for one in Basis],
+    )
+    hullwhite.add_argument(
+        "--time-basis",
+        dest="time_basis",
+        default=Basis.ACT_365F.name,
+        choices=[one.name for one in Basis],
+        help="day count the model measures its own year fractions in",
+    )
+    hullwhite.add_argument(
+        "--ridge",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="A",
+        help="refit the volatility at these mean reversions and report the spread",
+    )
+    hullwhite.add_argument(
+        "--normal-vol",
+        dest="normal_vol",
+        action="store_true",
+        help="also report the annuity-measure volatilities the price implies",
+    )
+    hullwhite.set_defaults(run=run_hullwhite)
 
     return root
 

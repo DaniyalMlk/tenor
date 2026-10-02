@@ -1383,3 +1383,146 @@ def test_swaption_refuses_an_expiry_after_its_swap_starts(
     arguments = swaption_arguments(long_curves)
     assert main([*arguments, "--effective", "2030-01-15"]) == 2
     assert "already begun accruing" in capsys.readouterr().err
+
+
+# -- the short rate model -----------------------------------------------------
+
+
+def hullwhite_arguments(curves: tuple[str, str]) -> list[str]:
+    ois, _ = curves
+    return [
+        "hullwhite",
+        ois,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--expiry",
+        "2036-01-15",
+        "--swap-maturity",
+        "2046-01-15",
+        "--mean-reversion",
+        "0.08",
+        "--volatility",
+        "0.009",
+    ]
+
+
+def test_hullwhite_reports_the_two_identities_and_the_two_routes(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *hullwhite_arguments(long_curves)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    # The repricing is an identity rather than a fit, so it is exactly zero.
+    assert payload["curve_repricing_error"] == 0.0
+    measure = payload["forward_measure"]
+    assert measure["probe_spread"] < 1e-15
+    assert measure["mean"] == pytest.approx(measure["instantaneous_forward"], abs=1e-15)
+
+    routes = payload["routes"]
+    assert routes["monotone"] is True
+    assert abs(routes["relative_gap"]) < 1e-11
+    assert routes["jamshidian"] == pytest.approx(routes["quadrature"], rel=1e-11)
+    assert routes["reference_rate"] is not None
+    assert payload["value"] > 0.0
+    assert payload["strike"] == pytest.approx(payload["forward_swap_rate"])
+
+
+def test_hullwhite_fits_the_volatility_to_a_premium(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *hullwhite_arguments(long_curves)]) == 0
+    priced = json.loads(capsys.readouterr().out)["value"]
+
+    arguments = hullwhite_arguments(long_curves)
+    arguments[arguments.index("--volatility")] = "--premium"
+    arguments[arguments.index("0.009")] = str(priced)
+    assert main(["--json", *arguments]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    # The volatility the price came from comes back out of it.
+    assert payload["volatility"] == pytest.approx(0.009, rel=1e-9)
+    assert payload["calibration"]["worst"] < 1e-12
+    assert payload["calibration"]["iterations"] > 0
+
+
+def test_hullwhite_reports_the_ridge(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [*hullwhite_arguments(long_curves), "--ridge", "0.02", "0.08", "0.3"]
+    assert main(["--json", *arguments]) == 0
+    ridge = json.loads(capsys.readouterr().out)["ridge"]
+    assert [row["mean_reversion"] for row in ridge] == [0.02, 0.08, 0.3]
+    volatilities = [row["volatility"] for row in ridge]
+    # A steeper reversion needs a larger volatility to reach the same price,
+    # and every point on the ridge reprices it.
+    assert volatilities == sorted(volatilities)
+    assert volatilities[-1] / volatilities[0] > 3.0
+    assert all(row["refit_error"] < 1e-12 for row in ridge)
+    assert ridge[1]["volatility"] == pytest.approx(0.009, rel=1e-9)
+
+
+def test_hullwhite_reports_the_annuity_measure_volatilities(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [*hullwhite_arguments(long_curves), "--normal-vol"]
+    assert main(["--json", *arguments]) == 0
+    implied = json.loads(capsys.readouterr().out)["implied"]
+    # A Gaussian short rate at a 0.9% volatility is tens of basis points of
+    # normal volatility and low tens of per cent of lognormal.
+    assert 0.002 < implied["normal"] < 0.010
+    assert 0.05 < implied["lognormal"] < 0.30
+
+
+def test_hullwhite_prices_a_mid_curve_by_quadrature_alone(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [*hullwhite_arguments(long_curves), "--effective", "2038-01-15"]
+    assert main(["--json", *arguments]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    routes = payload["routes"]
+    assert routes["monotone"] is False
+    assert routes["jamshidian"] is None
+    assert routes["reference_rate"] is None
+    assert routes["quadrature"] > 0.0
+
+
+def test_hullwhite_takes_the_receiver(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *hullwhite_arguments(long_curves)]) == 0
+    payer = json.loads(capsys.readouterr().out)["value"]
+    assert main(["--json", *hullwhite_arguments(long_curves), "--receiver"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["payoff"] == "receiver"
+    # Struck at the forward, so the two are worth the same.
+    assert payload["value"] == pytest.approx(payer, rel=1e-12)
+
+
+def test_hullwhite_needs_exactly_one_of_a_volatility_and_a_premium(
+    long_curves: tuple[str, str]
+) -> None:
+    arguments = hullwhite_arguments(long_curves)
+    both = [*arguments, "--premium", "0.03"]
+    assert main(both) == 2
+    without = [
+        part
+        for index, part in enumerate(arguments)
+        if part != "--volatility" and arguments[index - 1] != "--volatility"
+    ]
+    assert main(without) == 2
+
+
+def test_hullwhite_refuses_a_zero_mean_reversion(long_curves: tuple[str, str]) -> None:
+    arguments = hullwhite_arguments(long_curves)
+    arguments[arguments.index("0.08")] = "0.0"
+    assert main(arguments) == 2
+
+
+def test_hullwhite_prints_a_human_report(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(hullwhite_arguments(long_curves)) == 0
+    out = capsys.readouterr().out
+    assert "mean_reversion" in out
+    assert "jamshidian" in out
