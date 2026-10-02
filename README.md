@@ -1180,6 +1180,79 @@ this command has been handed is the discount curve, the short leg is projected
 off that — an assumption rather than a quote, so it is named in the output
 rather than left to be inferred from a number that is partly a proxy.
 
+## Swaptions, and where the discount curve finally matters
+
+The section above measured a factor of 843 between what the projection curve
+and the discount curve are worth to a par swap rate. The obvious next question
+is where the discount curve *does* matter, and it has a structural answer:
+anything whose value is an annuity times something. A swaption is the first such
+instrument.
+
+```
+$ tenor swaption examples/ois-long.txt --reference 2026-01-15 --basis ACT_365F \
+      --forecast examples/forecast-long.txt --expiry 2036-01-15 \
+      --swap-maturity 2046-01-15 --volatility 0.20
+forward_swap_rate: 0.04037356175
+strike: 0.04037356175
+annuity: 5.739934379
+value: 0.05752663246
+discount_shift:
+  value: 0.04971483016
+  relative_change_in_value: -0.1357945348
+  relative_change_in_forward: 0.001240501324
+  relative_change_in_annuity: -0.1384831056
+strip:
+  value: 0.06696852659
+  over_the_option: 0.1641308335
+  periods: 40
+implied_volatility_from_its_own_premium: 0.2
+```
+
+Read the three numbers under `discount_shift`. A hundred basis points on the
+discount curve moves the forward swap rate by 0.124% of its level and the
+option by **-13.58%** — a hundred and nine times as much — and the decomposition
+says why: the annuity falls 13.85% and the rate's rise claws 0.12% back. Under
+the annuity measure the forward swap rate is a martingale and the swaption is a
+European call on it, so the discount curve has been factored into the numeraire.
+That is precisely why it comes back multiplicatively.
+
+### Both conventions, and how far apart they are
+
+A negative forward swap rate has no lognormal volatility, so `--normal` reads
+the volatility as a Bachelier one in absolute units of the rate. The two are not
+conversions of each other. At the money both give `numeraire * vol * sqrt(2T/pi)`
+to leading order, so the product of a lognormal volatility and the forward is
+the right first guess for the normal one — and it is 39.78 basis points against
+the product's 39.80 at a 10% volatility over one year, 4.2e-04 apart; 4.2e-03
+apart over ten years; and **1.6e-02** apart at a 20% volatility over ten years.
+The gap grows with `σ√T`, which is worth knowing before converting a quote at a
+long expiry.
+
+### A strip of options is not an option on the strip
+
+The `strip` block prices the cap of the same strike and tenor beside the
+swaption. The cap's holder chooses period by period, so it is worth more: 16.4%
+more on the structure above, and **78.1% more** on the five-year quarterly
+structure in the tests at a 20% volatility. The premium *shrinks* as volatility
+rises — 82.8% at 10% against 74.8% at 40% — which is the reverse of the natural
+guess.
+
+That inequality is Jensen's, and it is the sharpest check available that both
+prices are built on the same curve: an error in either breaks it. Over
+twenty-five strikes and volatilities it holds twenty-four times and fails once,
+by 6.98e-05, and the failure turned out to be the most informative part of the
+phase.
+
+It is not a pricing error. The fixed leg's annuity accrues on unadjusted
+boundaries under 30/360; the caplet weights accrue on adjusted ones under
+actual/360. So the two numeraires differ by 4.655e-05 relative, and the forward
+swap rate and the weight-average forward differ by 4.654e-05 — the same number.
+Deep in the money at a low volatility both prices collapse to their intrinsics,
+the ratio collapses to those two mismatches, and `(1 + 4.655e-05)(1 - 1.1635e-04)`
+is 0.99993019 against a measured 0.99993019. The inequality is exact in the
+mathematics and violated in the conventions, by precisely the amount the
+conventions differ.
+
 ## Development
 
 ```bash

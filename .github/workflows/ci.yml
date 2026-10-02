@@ -190,3 +190,14 @@ jobs:
             --flat-frequency SEMI_ANNUAL
           tenor --json multicurve examples/ois.txt --reference 2026-01-15 \
             --basis ACT_365F --forecast examples/forecast.txt > /dev/null
+          tenor swaption examples/ois-long.txt --reference 2026-01-15 \
+            --basis ACT_365F --forecast examples/forecast-long.txt \
+            --expiry 2036-01-15 --swap-maturity 2046-01-15 --volatility 0.20
+          tenor swaption examples/ois-long.txt --reference 2026-01-15 \
+            --basis ACT_365F --forecast examples/forecast-long.txt \
+            --expiry 2036-01-15 --swap-maturity 2046-01-15 --volatility 0.008 \
+            --normal --receiver
+          tenor --json swaption examples/ois-long.txt --reference 2026-01-15 \
+            --basis ACT_365F --forecast examples/forecast-long.txt \
+            --expiry 2036-01-15 --swap-maturity 2046-01-15 --volatility 0.20 \
+            > /dev/null

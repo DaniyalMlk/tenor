@@ -434,3 +434,59 @@ unexplained off-curve error out of the pillar seeding, and the forward lines in 
 basis file were being dropped when the basis quotes were adapted to the
 one-unknown protocol — which no repricing check can see, because the curve
 reprices whatever it was actually handed.
+
+## Phase 14 — Swaptions, caps and floors
+
+- [x] European swaptions on the annuity measure, in which the forward swap rate
+      is a martingale and Black's formula applies with no approximation beyond
+      the lognormality assumed of the rate
+- [x] The Bachelier convention alongside it, because a negative forward swap
+      rate has no lognormal volatility and two major currencies had one for a
+      decade
+- [x] Caps and floors as strips of caplets, each on its own forward with its own
+      accrual and discount factor, the already-fixed first period excluded by
+      default and priced at intrinsic when asked for
+- [x] Both parity identities as tests: a payer less a receiver is the
+      forward-starting swap, and a cap less a floor is the same statement for
+      the strip
+- [x] A premium read back as a volatility in either convention, bisected on a
+      bracket that is widened rather than assumed
+- [x] A command-line entry point pricing the option and the strip side by side
+
+The measurement this phase exists for follows directly from the last one. A par
+swap rate is almost independent of the curve it is discounted on — the previous
+phase measured a factor of 843 between what the projection curve and the
+discount curve are worth to it. A swaption is the *annuity* times a call on that
+rate, and the annuity is nothing but discount factors. So the same 100 basis
+point shift that moves the ten-year into ten-year forward swap rate by 0.5067
+basis points, 0.125% of its level, moves the option's value by **-13.57%** —
+108 times as much. The move decomposes exactly as it should: the annuity falls
+13.845% and the rate's rise claws 0.125% back.
+
+The two conventions agree at the money only to leading order, and that is worth
+measuring rather than assuming, because the conversion looks exact. Both give
+`numeraire * vol * sqrt(2T/pi)` to first order, so a normal volatility is about
+a lognormal one times the forward — 39.78 basis points against the product's
+39.80 at a 10% volatility over one year, agreeing to 4.2e-04; 4.2e-03 over ten
+years; and 1.6e-02 at a 20% volatility over ten years. The error grows with
+`sigma sqrt(T)` and is a per cent and a half by the time anyone is quoting a
+ten-year expiry.
+
+A cap is a portfolio of options and a swaption is an option on the portfolio,
+and the gap is large rather than a correction: on the five-year quarterly
+structure the strip is worth **78.1% more** at a 20% volatility. The premium
+*shrinks* as volatility rises — 82.8% at 10% against 74.8% at 40% — which is the
+reverse of the natural guess that more volatility means more to choose between.
+
+The check that found something was Jensen's inequality: the strip is worth at
+least the option on it. Over twenty-five strikes and volatilities it holds
+twenty-four times and fails once, by 6.98e-05, deep in the money at a low
+volatility. That is not a pricing error. The fixed leg's annuity accrues on
+unadjusted boundaries under 30/360 and the caplet weights on adjusted ones under
+actual/360, so the annuity and the weight sum differ by 4.655e-05 relative and
+the forward swap rate and the weight-average forward by 4.654e-05. At a strike
+of 0.6 times the forward both prices are their intrinsics and the ratio is
+`(1 + 4.655e-05)(1 - 1.1635e-04)`, which is 0.99993019 against a measured
+0.99993019. The inequality is exact in the mathematics and violated in the
+conventions, by precisely the amount the conventions differ — which is the most
+useful thing an inequality can do.

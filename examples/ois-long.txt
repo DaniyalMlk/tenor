@@ -1,0 +1,12 @@
+# Overnight-indexed swaps out to twenty years, for pricing an option on a
+# ten-year swap ten years forward. A curve quoted only to the swap's maturity
+# cannot reach its final payment, let alone a swaption on it.
+deposit  2026-04-15  0.0290  ACT_360
+swap     2027-01-15  0.0310  ANNUAL  ACT_365F
+swap     2028-01-17  0.0325  ANNUAL  ACT_365F
+swap     2029-01-15  0.0338  ANNUAL  ACT_365F
+swap     2031-01-15  0.0352  ANNUAL  ACT_365F
+swap     2033-01-17  0.0361  ANNUAL  ACT_365F
+swap     2036-01-15  0.0368  ANNUAL  ACT_365F
+swap     2041-01-15  0.0372  ANNUAL  ACT_365F
+swap     2046-01-15  0.0374  ANNUAL  ACT_365F

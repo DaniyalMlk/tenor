@@ -87,6 +87,13 @@ from .multicurve import (
     projected_forward,
     split_risk,
 )
+from .options import (
+    Cap,
+    Convention,
+    Payoff,
+    Swaption,
+    implied_volatility,
+)
 from .rates import Compounding
 from .risk import buckets_from, instrument_risk, key_rates, level, shape_duration
 from .schedule import Frequency, add_months
@@ -809,6 +816,139 @@ def run_multicurve(arguments: argparse.Namespace) -> dict[str, object]:
                 "cross_term": split.crossed,
             },
         }
+    return payload
+
+
+def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
+    """A swaption, the cap beside it, and what each curve is worth to them.
+
+    The discount sensitivity is the point of the report. A par swap rate moves
+    a fraction of a basis point under a shift to the discount curve; the option
+    is that rate's call times the annuity, and the annuity is nothing but
+    discount factors, so it moves by two orders of magnitude more.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    index = ForecastIndex(
+        tenor=Frequency[arguments.index_tenor.upper()],
+        basis=_basis(arguments.index_basis),
+    )
+    quotes, spreads = parse_forecast_quotes(
+        Path(arguments.forecast).read_text(), reference, index
+    )
+    if spreads:
+        raise BadInput(
+            "a swaption needs a projection curve for its own index, and a file of "
+            "tenor basis spreads solves a different index's curve. Build the "
+            "index curve from forward or swap quotes instead."
+        )
+    forecast = bootstrap_forecast(
+        reference,
+        quotes,
+        discount=discounting.curve,
+        basis=_basis(arguments.basis),
+        interpolation=_interpolation(arguments.interpolation),
+    )
+
+    expiry = date.fromisoformat(arguments.expiry)
+    effective = (
+        date.fromisoformat(arguments.effective) if arguments.effective else expiry
+    )
+    maturity = date.fromisoformat(arguments.swap_maturity)
+    payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
+    convention = Convention.NORMAL if arguments.normal else Convention.LOGNORMAL
+    frequency = Frequency[arguments.fixed_frequency.upper()]
+    fixed_basis = _basis(arguments.fixed_basis)
+    vol_basis = _basis(arguments.vol_basis)
+
+    def make(strike: float) -> Swaption:
+        return Swaption(
+            expiry=expiry,
+            effective=effective,
+            maturity=maturity,
+            strike=strike,
+            payoff=payoff,
+            index=index,
+            frequency=frequency,
+            basis=fixed_basis,
+        )
+
+    probe = make(0.0)
+    forward = probe.forward_rate(discounting.curve, forecast.curve)
+    strike = arguments.strike if arguments.strike is not None else forward
+    option = make(strike)
+    annuity = option.annuity(discounting.curve)
+    years = option.time_to_expiry(reference, vol_basis)
+    value = option.value(
+        discounting.curve,
+        forecast.curve,
+        arguments.volatility,
+        convention=convention,
+        vol_basis=vol_basis,
+    )
+
+    shifted = discounting.curve.shifted(0.0100)
+    moved = option.value(
+        shifted,
+        forecast.curve,
+        arguments.volatility,
+        convention=convention,
+        vol_basis=vol_basis,
+    )
+    shifted_forward = probe.forward_rate(shifted, forecast.curve)
+
+    strip = Cap(
+        effective=effective, maturity=maturity, strike=strike, payoff=payoff, index=index
+    )
+    strip_value = strip.value(
+        discounting.curve,
+        forecast.curve,
+        arguments.volatility,
+        convention=convention,
+        vol_basis=vol_basis,
+        include_first=True,
+    )
+
+    payload: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "expiry": expiry.isoformat(),
+        "convention": convention.value,
+        "payoff": payoff.value,
+        "rate_option": payoff.rate_option,
+        "forward_swap_rate": forward,
+        "strike": strike,
+        "annuity": annuity,
+        "years_to_expiry": years,
+        "value": value,
+        "intrinsic": option.intrinsic(discounting.curve, forecast.curve),
+        "discount_shift": {
+            "value": moved,
+            "relative_change_in_value": (moved - value) / value if value else 0.0,
+            "relative_change_in_forward": (shifted_forward - forward) / forward,
+            "relative_change_in_annuity": (
+                option.annuity(shifted) - annuity
+            )
+            / annuity,
+        },
+        "strip": {
+            "value": strip_value,
+            "over_the_option": strip_value / value - 1.0 if value else 0.0,
+            "periods": len(
+                strip.caplets(
+                    discounting.curve,
+                    forecast.curve,
+                    arguments.volatility,
+                    convention=convention,
+                    vol_basis=vol_basis,
+                    include_first=True,
+                )
+            ),
+        },
+    }
+    if value > 0.0:
+        payload["implied_volatility_from_its_own_premium"] = implied_volatility(
+            value / annuity, forward, strike, years, payoff, convention=convention
+        )
     return payload
 
 
@@ -1550,6 +1690,96 @@ def parser() -> argparse.ArgumentParser:
         help="day count that swap's fixed leg accrues on",
     )
     multicurve.set_defaults(run=run_multicurve)
+
+    swaption = subcommands.add_parser(
+        "swaption",
+        help="price a swaption and the cap of the same strike",
+        description=(
+            "Builds both curves exactly as 'multicurve' does, then prices a "
+            "European swaption on the annuity measure and the cap of the same "
+            "strike and tenor beside it. The two numbers worth reading are what "
+            "a shift in the discount curve does to the option against what it "
+            "does to the underlying rate -- a par rate barely notices the "
+            "discount curve and a swaption is the annuity times a call on that "
+            "rate -- and the gap between the strip and the option on it, which "
+            "is the value of choosing period by period rather than once."
+        ),
+    )
+    shared(swaption)
+    swaption.add_argument(
+        "--forecast",
+        required=True,
+        help="a file of forward or swap quotes on the index",
+    )
+    swaption.add_argument("--expiry", required=True, help="the option's expiry, ISO")
+    swaption.add_argument(
+        "--swap-maturity",
+        dest="swap_maturity",
+        required=True,
+        help="when the underlying swap matures, ISO",
+    )
+    swaption.add_argument(
+        "--effective",
+        default=None,
+        help="when the underlying swap starts; defaults to the expiry",
+    )
+    swaption.add_argument(
+        "--strike",
+        type=float,
+        default=None,
+        help="the fixed rate as a decimal; defaults to the forward swap rate",
+    )
+    swaption.add_argument(
+        "--volatility",
+        type=float,
+        required=True,
+        help="annualised, lognormal unless --normal is passed",
+    )
+    swaption.add_argument(
+        "--normal",
+        action="store_true",
+        help=(
+            "read the volatility as a Bachelier one in absolute units of the "
+            "rate, which is the only convention a negative forward has"
+        ),
+    )
+    swaption.add_argument(
+        "--receiver",
+        action="store_true",
+        help="price the receiver rather than the payer",
+    )
+    swaption.add_argument(
+        "--index-tenor",
+        dest="index_tenor",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+    )
+    swaption.add_argument(
+        "--index-basis",
+        dest="index_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+    )
+    swaption.add_argument(
+        "--fixed-frequency",
+        dest="fixed_frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+    )
+    swaption.add_argument(
+        "--fixed-basis",
+        dest="fixed_basis",
+        default=Basis.THIRTY_360_BOND.name,
+        choices=[one.name for one in Basis],
+    )
+    swaption.add_argument(
+        "--vol-basis",
+        dest="vol_basis",
+        default=Basis.ACT_365F.name,
+        choices=[one.name for one in Basis],
+        help="day count the volatility's time to expiry is measured in",
+    )
+    swaption.set_defaults(run=run_swaption)
 
     return root
 
