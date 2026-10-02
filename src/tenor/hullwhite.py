@@ -366,7 +366,7 @@ def forward_measure(
     curve: DiscountCurve,
     model: HullWhite,
     expiry: float,
-    probes: tuple[float, ...] = (1.0, 5.0, 10.0, 30.0),
+    probes: tuple[float, ...] = (0.5, 1.0, 2.0, 5.0),
 ) -> ForwardMeasure:
     """The terminal short rate's law under the forward measure to ``expiry``.
 
@@ -713,20 +713,27 @@ def swaption_price(
     Raises:
         BadModel: If the expiry is not after the reference date.
     """
-    expiry = year_fraction(reference, option.expiry, basis)
-    if expiry <= 0.0:
+    if option.expiry <= reference:
         raise BadModel(
             f"swaption {option.name} expires on {option.expiry.isoformat()}, on or "
             f"before the valuation date {reference.isoformat()}"
         )
+    expiry = year_fraction(reference, option.expiry, basis)
     schedule = option.swap.fixed_schedule()
+    # The notional legs go on the schedule's *own* dates, not on the option's
+    # nominal effective and maturity. A rolling convention moves the first
+    # accrual's start and the last period's payment by up to a few days, and
+    # putting the notional on the nominal dates instead breaks the
+    # payer-less-receiver identity by exactly that much discounting: measured
+    # 1.02e-04 on a swap worth 0.0491, which is 0.21% and reads as a pricing
+    # error rather than as a date.
+    start = schedule[0].adjusted_start
+    end = schedule[-1].payment
     flows: list[Flow] = []
-    if option.effective > option.expiry:
-        # Mid-curve: the floating leg is only worth par at the swap's start, so
-        # the notional is exchanged there and comes back at maturity.
-        flows.append(
-            Flow(year_fraction(reference, option.effective, basis), -1.0)
-        )
+    if start > option.expiry:
+        # The notional is only certain to be worth par when the accrual starts,
+        # so a swap starting after the expiry exchanges it there as a flow.
+        flows.append(Flow(year_fraction(reference, start, basis), -1.0))
     for index, period in enumerate(schedule):
         accrual = year_fraction(period.start, period.end, option.basis)
         amount = option.strike * accrual
@@ -734,11 +741,16 @@ def swaption_price(
             amount += 1.0
         flows.append(Flow(year_fraction(reference, period.payment, basis), amount))
     flows.sort(key=lambda flow: flow.time)
-    # A mid-curve swaption's exercise condition is on the swap's whole value,
-    # so the notional exchange at the swap's start is one of the flows and the
-    # strike is zero. Where the swap starts at the expiry that exchange is
-    # worth par with certainty and moves to the strike instead.
-    strike = 1.0 if option.effective <= option.expiry else 0.0
+    if year_fraction(reference, end, basis) <= expiry:
+        raise BadModel(
+            f"swaption {option.name} underlies a swap whose last payment on "
+            f"{end.isoformat()} does not outlive the expiry"
+        )
+    # Where the accrual starts at the expiry the notional is worth par with
+    # certainty and becomes the strike; otherwise it is one of the flows above
+    # and the exercise condition is on the swap's whole value, so the strike is
+    # zero.
+    strike = 1.0 if start <= option.expiry else 0.0
     bond = CouponBondOption(
         expiry=expiry, flows=tuple(flows), strike=strike, payoff=option.payoff
     )
