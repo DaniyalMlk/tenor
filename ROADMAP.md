@@ -490,3 +490,93 @@ of 0.6 times the forward both prices are their intrinsics and the ratio is
 0.99993019. The inequality is exact in the mathematics and violated in the
 conventions, by precisely the amount the conventions differ — which is the most
 useful thing an inequality can do.
+
+## Phase 15 — A short rate model, so one parameter set prices everything
+
+- [x] Hull-White's one factor, with the drift fitted to the initial curve
+      through `A(t,T)` rather than by solving for `theta`
+- [x] The analytic zero-coupon bond option, and put-call parity on it asserted
+      rather than assumed
+- [x] Jamshidian's decomposition for an option on a coupon bond, and so for a
+      swaption
+- [x] A second route by quadrature over the terminal short rate, so the
+      decomposition has something independent to be measured against
+- [x] The forward measure's mean implied from the martingale property of
+      forward bond prices, and over-determined on purpose
+- [x] Volatility calibration at a given mean reversion, with the trade-off
+      between them measured rather than hidden inside a two-parameter fit
+- [x] A command-line entry point reporting the identities before the price
+
+Phases 13 and 14 put a swaption on the annuity measure, which takes a
+volatility as an input, and phase 6 put a callable bond on a lattice, which has
+no closed form and says nothing about a swaption. Neither is a model in the
+sense of one specification pricing both. This is the smallest thing that is.
+
+**The curve repricing is an identity, so it is exact.** `A(t,T)` carries the
+whole of the initial curve, so at `t = 0` the model's bond price *is* the
+curve's discount factor. Across a seventeen-pillar humped curve, every mean
+reversion from 0.01 to 0.5 and every volatility from zero to 2%, the worst
+relative error is **exactly 0.0**. Nothing is being fitted; a failure there
+would mean the instantaneous forward is not what the formula assumes.
+
+**The forward-measure mean came out cleaner than expected.** Pricing by
+quadrature needs the law of `r(T)` under the `T`-forward measure, and copying a
+drift adjustment from a reference would have been a third of a line and checked
+by nothing. Implying it instead, from the fact that every forward bond price is
+a martingale under that measure, over-determines it: each probe maturity gives
+its own answer and they all have to agree. They agree to **0.0**, and the
+reason is that the terms cancel identically — the `B²v/2` from the lognormal
+expectation is exactly the convexity term inside `A`, leaving
+`E^T[r(T)] = f(0,T)` with nothing left over. The forward-measure expectation of
+the future short rate *is* the instantaneous forward.
+
+**The obvious quadrature is wrong by twelve per cent.** A Gaussian weight
+invites a Gauss-Hermite rule, and a sixty-four point one priced the
+near-the-money options to five digits and a deep out-of-the-money one wrong by
+**1.25e-01 relative**. A Gauss rule converges at that rate on a kink and an
+option payoff is nothing but a kink. The symptom was misleading in a specific
+way: the two routes agreed on the *difference* between a payer and a receiver
+to 1e-12 while both were wrong, because the error is in the straddle and
+cancels in parity — so every identity still held and only the level was out.
+Putting the exercise boundary at a panel edge of a composite Gauss-Legendre
+rule turned five digits into fifteen, and the two routes now agree to
+**3.1e-14** relative over eighteen combinations of expiry, coupon and side, and
+to 1.3e-15 on a ten-year-into-ten-year swaption.
+
+**Mean reversion and volatility are not separately identified by one quote.**
+A ten-into-ten payer struck at its forward is repriced *exactly* at every
+reversion from 0.01 to 0.30 — the refitted volatility runs 0.492% to 3.226%, a
+factor of **6.55** for a factor of 30 in `a`, and the refit error is at most
+2.2e-16 at every point. There is no residual to choose between them, which is
+why `calibrate` takes the reversion as an argument: a routine fitting both to
+one quote would return whichever point on the ridge its initial guess fell
+nearest and would report a residual of zero either way. What separates them is
+the term structure: the pair fitted to the ten-year expiry prices a
+one-year-into-ten-year anywhere from **23.4% below to 57.2% above** the
+`a = 0.08` answer across that range.
+
+**And the model's native convention is the normal one, measurably.** Reading
+its own swaption prices back through `implied_volatility`, the normal
+volatility across strikes from 60% to 140% of the forward moves 1.06 basis
+points on a level of 45.55 — a smile **2.33%** wide, and monotone rather than
+curved, so it is a skew and not a smile at all. The lognormal convention on the
+same prices moves **41.91%** of its own level, eighteen times as much. A
+Gaussian short rate makes a nearly Gaussian swap rate.
+
+Two defects in the code, both found by identities.
+
+The notional legs were on the swaption's nominal effective and maturity rather
+than on the schedule's own adjusted start and last payment. A rolling
+convention moves those by days, and the payer-less-receiver identity broke by
+1.02e-04 on a swap worth 0.0491 — 0.21%, which reads as a pricing error rather
+than as a date. The par rate a test compares against has to be computed on the
+same dates for the same reason, and getting one of the two right is worse than
+getting both wrong, because then only one number looks off.
+
+And the default probe maturities for the forward measure reached thirty years
+past the expiry, so a twenty-year expiry walked off a thirty-year curve and
+arrived as `OffCurve` out of a diagnostic. The defaults are short offsets now.
+
+One defect in the tests: a payer swaption was asserted to rise with its strike.
+Paying a higher fixed rate is worse, so it falls, and the first run of the
+suite said so.
