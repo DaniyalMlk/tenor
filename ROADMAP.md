@@ -580,3 +580,104 @@ arrived as `OffCurve` out of a diagnostic. The defaults are short offsets now.
 One defect in the tests: a payer swaption was asserted to rise with its strike.
 Paying a higher fixed rate is worse, so it falls, and the first run of the
 suite said so.
+
+## Phase 16 — A second factor, because one cannot decorrelate two rates
+
+- [x] The five parameters, each with the constraint it has, and equal speeds
+      allowed rather than refused
+- [x] The bond price with the exact fit in the formula, not fitted
+- [x] The deterministic shift, so the two factors connect to a short rate
+- [x] The zero-coupon bond option in closed form, and caps and floors as the
+      strips of them they exactly are
+- [x] The correlation between two zero rates, in closed form
+- [x] Exact simulation of the terminal factor law, as something independent to
+      check the closed forms against
+- [x] A fit of the fast volatility to a cap price, with the bracket searched
+      for rather than assumed
+- [x] A command-line entry point that prices a cap and then shows what the cap
+      cannot identify
+
+Phase 15 is a real model and has one limitation calibration cannot touch. With
+a single factor every bond price is affine in the same scalar, so
+`log P(t, T1)` and `log P(t, T2)` are affine in one Gaussian and their
+correlation is **exactly one** for every pair of maturities at every parameter
+setting. The short end and the long end move together, always. For anything
+whose value depends on the shape of the curve rather than its level that is not
+a small approximation, and `r = x + y + phi(t)` with two speeds fixes it
+without giving up a single closed form.
+
+**The exact fit is better than Hull-White's, and for the same reason.** Both
+factors start at zero and the three variance terms telescope at `t = 0`, so the
+curve reprices with an error of **identically 0.0** rather than to a tolerance.
+Nothing is fitted; the whole initial curve enters as a ratio of its own
+discount factors.
+
+**Equal mean reversions collapse the model to the one-factor one, exactly**, and
+that is why `a == b` is permitted rather than refused. With both speeds equal
+the bond price depends on `x + y` alone, which is itself an Ornstein-Uhlenbeck
+process with volatility `sqrt(sigma^2 + eta^2 + 2 rho sigma eta)` — so the
+model *is* Hull-White there and every formula has to reduce. Measured against
+`tenor.hullwhite`: the bond option volatility to **1e-16**, the option price to
+**1e-15** across both payoffs and four strikes, the bond price to **1e-14**, and
+the implied correlation to 1.0 within **1e-12**. A caller who reaches `a == b`
+has written a one-factor model in two-factor notation, which is a waste rather
+than an error, and refusing it would have cost the strongest check in the
+module.
+
+It is a check that crosses modules, and it earned its keep immediately: the
+bond option was first written with its own `call`/`put` flag, clearer than
+`tenor.options.Payoff` and the opposite way round, so the same call against the
+two models in this package returned opposite options. The reduction test caught
+it by disagreeing with Hull-White by exactly the parity amount at every
+parameter setting. One convention per package beats a readable argument name.
+
+**What the second factor buys, measured.** At a 0.50 fast speed, a 0.05 slow
+speed and a driver correlation of -0.9, the one-year and ten-year zero rates
+come out correlated **0.3592** at a one-year horizon against the one factor's
+forced 1.0, and the six-month against the ten-year **0.1549**. The work is done
+by the *gap* between the speeds rather than by the second factor's existence,
+and it closes as they meet: 0.3592, 0.3387, 0.4255, 0.8862, 0.9999 and exactly
+1.0000 as the slow speed walks up to the fast one. Not monotone — there is a
+shallow minimum near 0.1 — which is worth knowing before fitting the pair.
+
+**And a cap cannot identify any of it, structurally.** A cap is a strip of
+options on *single* bonds, so its price depends only on each bond's own
+volatility and never on the joint law of two maturities. Refitting the fast
+volatility so that a one-year to ten-year semi-annual cap struck at 3.8%
+reprices to the same number, seven driver correlations from -0.9 to 0.9 give
+cap prices equal to within **2.4e-15 relative** — the same number, to rounding
+— while the one-year-to-ten-year zero-rate correlation runs from **0.0674 to
+0.9965**. Seven calibrations a cap market cannot distinguish, describing curves
+that bend in completely different ways. That is the quantitative form of the
+usual advice that caps calibrate volatility and swaptions calibrate
+correlation.
+
+**The refit is where this phase's bug was.** Written as a bisection from a
+floor to a ceiling, it returned a price a third away from the target while
+reporting success. A cap price is not monotone in the fast volatility: the bond
+option variance is `sigma^2 A + eta^2 B + 2 rho sigma eta C` with all three
+coefficients positive, so at a negative `rho` it is a parabola in `sigma` with
+its minimum strictly inside the domain, and raising `sigma` from nothing makes
+the cap *cheaper*. So `fit_fast_volatility` searches for its bracket on a
+geometric grid and hands the first crossing from below to Brent, which picks
+the branch where more volatility means a dearer cap; a target under the
+cheapest attainable price raises `NoRoot` naming that price. The command
+reports those rows as unreachable with the reason rather than as numbers, since
+an unreachable target is itself part of the answer about what a cap constrains.
+
+Two smaller findings. The accrual factor is not a second-order input: moving it
+from 0.5 to 0.5055 — the 30/360 against the actual/365 figure for the same half
+year, 1.1% apart — moves a two-year caplet struck at 3.6% by **7.0%**, because
+the accrual enters through `1 + accrual * strike`, which is both the quantity
+and the reciprocal of the bond strike, so it shifts a near-the-money option's
+moneyness rather than scaling it. And the integrated factors are strictly less
+correlated than their drivers at every finite horizon — the two mean reversions
+weight the same history differently, so the levels cannot inherit `rho`, which
+is why the result object carries both numbers.
+
+One test defect of my own, corrected rather than loosened. The bond-price
+reduction was first checked by passing Hull-White the curve's instantaneous
+forward plus one factor, which found a 1.5e-03 relative gap. That is the size
+of the convexity term in `phi`, not a defect: the state map is
+`r(t) = phi(t) + x(t) + y(t)`, and the mapping is now the point of the test
+rather than an incidental detail of it.

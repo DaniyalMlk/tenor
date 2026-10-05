@@ -1322,6 +1322,61 @@ imply a normal volatility moving 1.06 basis points on a level of 45.55 across
 strikes from 60% to 140% of the forward — 2.33% wide, and monotone rather than
 curved — against the lognormal convention's 41.91% on the same prices.
 
+## A second factor, because one cannot decorrelate two rates
+
+The model above is a real one and has a limitation calibration cannot touch.
+With a single factor every bond price is affine in the same scalar, so two
+maturities are correlated **exactly one** at every parameter setting: the short
+end and the long end move together, always. `r = x + y + phi(t)` with two
+speeds and a correlation between the drivers removes that and keeps every
+closed form.
+
+The exact fit is better than the one-factor model's, for the same reason. Both
+factors start at zero and the three variance terms telescope at `t = 0`, so the
+curve reprices with an error of identically `0.0`.
+
+**Equal mean reversions collapse it to Hull-White exactly**, which is why they
+are allowed rather than refused: with both speeds equal the bond price depends
+on `x + y`, itself an Ornstein-Uhlenbeck process with volatility
+`sqrt(sigma^2 + eta^2 + 2 rho sigma eta)`. Measured against `tenor.hullwhite`,
+the option volatility agrees to 1e-16, the option price to 1e-15, the bond
+price to 1e-14 and the implied correlation to 1.0 within 1e-12. That check
+crosses modules, and it earned its keep immediately by catching the bond
+option's call/put convention pointing the opposite way to the one-factor
+module's — it disagreed by exactly the parity amount at every parameter
+setting.
+
+What the second factor buys: at a 0.50 fast speed, a 0.05 slow speed and a
+driver correlation of -0.9, the one-year and ten-year zero rates come out
+correlated **0.3592** at a one-year horizon. The work is done by the gap
+between the speeds, and it closes as they meet — 0.3592, 0.3387, 0.4255,
+0.8862, 0.9999, then exactly 1.0000 — with a shallow minimum on the way that is
+worth knowing before fitting the pair.
+
+**A cap cannot identify any of it.** A cap is a strip of options on single
+bonds, so its price depends only on each bond's own volatility and never on the
+joint law of two maturities. Refitting the fast volatility to hold a one-year
+to ten-year cap at 3.8% fixed, seven driver correlations from -0.9 to 0.9 give
+cap prices equal to within 2.4e-15 relative while the one-year-to-ten-year
+correlation runs from 0.0674 to 0.9965 — seven calibrations a cap market cannot
+tell apart.
+
+That refit is also where this phase's bug was. A cap price is not monotone in
+the fast volatility: at a negative driver correlation the bond option variance
+is a parabola in `sigma` with its minimum inside the domain, so raising
+`sigma` from nothing makes the cap cheaper. A bisection from a floor to a
+ceiling returned a price a third away from the target while reporting success.
+`fit_fast_volatility` searches for its bracket on a grid, takes the crossing
+from below, and raises `NoRoot` naming the cheapest attainable price when there
+is none.
+
+```bash
+tenor g2 ois.txt --reference 2026-01-15 --basis ACT_365F \
+  --start 2027-01-15 --end 2036-01-15 --frequency SEMI_ANNUAL --strike 0.035 \
+  --mean-reversion 0.50 --volatility 0.011 \
+  --slow-mean-reversion 0.05 --slow-volatility 0.007 --correlation 0.0 --identify
+```
+
 ## Development
 
 ```bash
