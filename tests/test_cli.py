@@ -1526,3 +1526,106 @@ def test_hullwhite_prints_a_human_report(
     out = capsys.readouterr().out
     assert "mean_reversion" in out
     assert "jamshidian" in out
+
+
+def g2_arguments(curves: tuple[str, str]) -> list[str]:
+    ois, _ = curves
+    return [
+        "g2",
+        ois,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--start",
+        "2027-01-15",
+        "--end",
+        "2036-01-15",
+        "--frequency",
+        "SEMI_ANNUAL",
+        "--strike",
+        "0.035",
+        "--mean-reversion",
+        "0.50",
+        "--volatility",
+        "0.011",
+        "--slow-mean-reversion",
+        "0.05",
+        "--slow-volatility",
+        "0.007",
+        "--correlation",
+        "0.0",
+    ]
+
+
+def test_g2_prices_a_cap_and_reports_the_identities(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *g2_arguments(long_curves)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    # Exact rather than fitted: both factors start at zero and the three
+    # variance terms cancel at t = 0.
+    assert payload["curve_repricing_error"] == 0.0
+    assert payload["value"] > 0.0
+    assert payload["instrument"] == "cap"
+    # The strip sums to the cap, which is the only thing a cap is.
+    assert sum(one["value"] for one in payload["caplets"]) == pytest.approx(
+        payload["value"]
+    )
+    assert len(payload["caplets"]) == 18
+    # phi exceeds the curve's own forward by the convexity term.
+    shift = payload["short_rate_shift"]
+    assert shift["phi"] > shift["instantaneous_forward"]
+    # Two maturities are no longer perfectly correlated, which one factor
+    # cannot manage at any parameter setting.
+    assert payload["correlations"]
+    for row in payload["correlations"]:
+        assert 0.0 < row["correlation"] < 1.0
+    # And the integrated factors are less correlated than their drivers.
+    assert abs(payload["factor_correlation"]) <= abs(payload["model"]["driver_correlation"])
+
+
+def test_g2_shows_that_the_cap_does_not_pin_the_correlation(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *g2_arguments(long_curves), "--identify"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    rows = [row for row in payload["identification"] if row["reachable"]]
+    assert len(rows) >= 5
+    # Every row prices the same cap to rounding.
+    for row in rows:
+        assert abs(row["relative_gap"]) < 1e-10
+    correlations = [row["zero_rate_correlation"] for row in rows]
+    assert max(correlations) - min(correlations) > 0.05
+    # And the fast volatility has to move a long way to hold the price.
+    volatilities = [row["fast_volatility"] for row in rows]
+    assert max(volatilities) / min(volatilities) > 2.0
+
+
+def test_g2_reports_an_unreachable_target_rather_than_a_wrong_fit(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A strongly negative base correlation puts the target below the floor.
+
+    A cap price is not monotone in the fast volatility at a negative driver
+    correlation, so a target set from one such model is often below what any
+    volatility reaches at another. The honest answer is to say so; the earlier
+    bisection returned the search floor and a price a third of the way off
+    while reporting success.
+    """
+    arguments = g2_arguments(long_curves)
+    arguments[arguments.index("--correlation") + 1] = "-0.9"
+    assert main(["--json", *arguments, "--identify"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    refused = [row for row in payload["identification"] if not row["reachable"]]
+    assert refused
+    assert "cheapest price on the grid" in refused[0]["reason"]
+
+
+def test_g2_rejects_a_cap_that_ends_before_it_starts(
+    long_curves: tuple[str, str],
+) -> None:
+    arguments = g2_arguments(long_curves)
+    arguments[arguments.index("--end") + 1] = "2026-06-15"
+    assert main(arguments) == 2
