@@ -38,11 +38,13 @@ from tenor.g2 import (
     cap_price,
     caplet,
     factor_moments,
+    fit_fast_volatility,
     simulate_factors,
     zero_rate_correlation,
 )
 from tenor.hullwhite import BadModel, HullWhite, zero_bond_option
 from tenor.options import Payoff
+from tenor.solve import NoRoot
 
 REFERENCE = date(2026, 1, 2)
 BASIS = Basis.ACT_365F
@@ -521,15 +523,11 @@ class TestWhatTheSecondFactorBuys:
         target = cap_price(curve, base, dates=dates, strike=strike)
 
         def refit(rho: float) -> G2:
-            low, high = 1e-9, 0.2
-            for _ in range(200):
-                middle = 0.5 * (low + high)
-                trial = G2(a=0.50, sigma=middle, b=0.05, eta=0.007, rho=rho)
-                if cap_price(curve, trial, dates=dates, strike=strike) < target:
-                    low = middle
-                else:
-                    high = middle
-            return G2(a=0.50, sigma=0.5 * (low + high), b=0.05, eta=0.007, rho=rho)
+            template = G2(a=0.50, sigma=0.011, b=0.05, eta=0.007, rho=rho)
+            root = fit_fast_volatility(
+                curve, template, dates=dates, strike=strike, target=target
+            )
+            return G2(a=0.50, sigma=root.value, b=0.05, eta=0.007, rho=rho)
 
         correlations = []
         for rho in (-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9):
@@ -680,3 +678,128 @@ class TestValidation:
         assert statistics.variance([y for _, y in draws]) == pytest.approx(
             factor_moments(half, 2.0).variance_y, rel=0.1
         )
+
+
+class TestFittingTheFastVolatility:
+    """The search, and the non-monotonicity that makes a bisection wrong."""
+
+    def test_it_recovers_a_volatility_it_was_given(self, curve: DiscountCurve) -> None:
+        dates = [1.0 + 0.5 * index for index in range(11)]
+        for sigma in (0.004, 0.011, 0.03):
+            model = G2(a=0.50, sigma=sigma, b=0.05, eta=0.007, rho=-0.3)
+            target = cap_price(curve, model, dates=dates, strike=0.038)
+            root = fit_fast_volatility(
+                curve, model, dates=dates, strike=0.038, target=target
+            )
+            assert root.value == pytest.approx(sigma, rel=1e-9)
+            assert root.converged
+            assert abs(root.residual) < 1e-12
+
+    def test_a_cap_is_not_monotone_in_the_fast_volatility(
+        self, curve: DiscountCurve
+    ) -> None:
+        """The reason the bracket is searched for rather than assumed.
+
+        The bond option variance is ``sigma**2 A + eta**2 B + 2 rho sigma eta
+        C`` with all three coefficients positive, so at a negative ``rho`` it
+        is a parabola in ``sigma`` with its minimum strictly inside the domain.
+        Raising ``sigma`` from nothing there makes the cap *cheaper*, and a
+        bisection from a floor to a ceiling converges to the floor while
+        reporting success.
+        """
+        dates = [1.0 + 0.5 * index for index in range(11)]
+        prices = [
+            cap_price(
+                curve,
+                G2(a=0.50, sigma=sigma, b=0.05, eta=0.007, rho=-0.9),
+                dates=dates,
+                strike=0.038,
+            )
+            for sigma in (1e-9, 0.002, 0.005, 0.01, 0.02, 0.05)
+        ]
+        assert prices != sorted(prices)
+        assert prices[1] < prices[0]
+        # And the same sweep at a positive rho is monotone, which is why the
+        # defect only shows up on half the parameter space.
+        rising = [
+            cap_price(
+                curve,
+                G2(a=0.50, sigma=sigma, b=0.05, eta=0.007, rho=0.9),
+                dates=dates,
+                strike=0.038,
+            )
+            for sigma in (1e-9, 0.002, 0.005, 0.01, 0.02, 0.05)
+        ]
+        assert rising == sorted(rising)
+
+    def test_a_target_below_the_cheapest_attainable_price_is_refused(
+        self, curve: DiscountCurve
+    ) -> None:
+        """And the refusal names the cheapest price, because that is the answer."""
+        dates = [1.0 + 0.5 * index for index in range(11)]
+        model = G2(a=0.50, sigma=0.011, b=0.05, eta=0.007, rho=-0.9)
+        cheapest = min(
+            cap_price(
+                curve,
+                G2(a=0.50, sigma=sigma, b=0.05, eta=0.007, rho=-0.9),
+                dates=dates,
+                strike=0.038,
+            )
+            for sigma in [1e-9 * (1e9) ** (i / 79.0) for i in range(80)]
+        )
+        with pytest.raises(NoRoot, match="cheapest price on the grid"):
+            fit_fast_volatility(
+                curve,
+                model,
+                dates=dates,
+                strike=0.038,
+                target=cheapest * 0.5,
+            )
+
+    def test_it_picks_the_upper_branch(self, curve: DiscountCurve) -> None:
+        """Where more volatility means a dearer cap, which is the sensible root.
+
+        At a negative ``rho`` a target above the minimum has two roots. The one
+        below the parabola's vertex prices a cap that gets *cheaper* as the
+        market gets more volatile, which is not a calibration anybody wants.
+        """
+        dates = [1.0 + 0.5 * index for index in range(11)]
+        model = G2(a=0.50, sigma=0.011, b=0.05, eta=0.007, rho=-0.9)
+        at_zero = cap_price(
+            curve,
+            G2(a=0.50, sigma=1e-9, b=0.05, eta=0.007, rho=-0.9),
+            dates=dates,
+            strike=0.038,
+        )
+        # A target just above the sigma -> 0 price has a root on each branch.
+        root = fit_fast_volatility(
+            curve, model, dates=dates, strike=0.038, target=at_zero * 1.0001
+        )
+        bumped = cap_price(
+            curve,
+            G2(a=0.50, sigma=root.value * 1.05, b=0.05, eta=0.007, rho=-0.9),
+            dates=dates,
+            strike=0.038,
+        )
+        assert bumped > at_zero * 1.0001
+
+    def test_bad_search_arguments(self, curve: DiscountCurve) -> None:
+        dates = [1.0, 1.5, 2.0]
+        model = G2(a=0.50, sigma=0.011, b=0.05, eta=0.007, rho=0.0)
+        with pytest.raises(BadModel, match="upper must be finite and positive"):
+            fit_fast_volatility(
+                curve, model, dates=dates, strike=0.038, target=0.001, upper=0.0
+            )
+        with pytest.raises(BadModel, match="nodes must be at least 3"):
+            fit_fast_volatility(
+                curve, model, dates=dates, strike=0.038, target=0.001, nodes=2
+            )
+
+    def test_it_fits_a_floor_too(self, curve: DiscountCurve) -> None:
+        dates = [1.0 + 0.5 * index for index in range(11)]
+        model = G2(a=0.50, sigma=0.014, b=0.05, eta=0.007, rho=0.2)
+        target = cap_price(curve, model, dates=dates, strike=0.030, floor=True)
+        root = fit_fast_volatility(
+            curve, model, dates=dates, strike=0.030, target=target, floor=True
+        )
+        assert root.value == pytest.approx(0.014, rel=1e-8)

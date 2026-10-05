@@ -59,6 +59,14 @@ from .futures import (
     cheapest_to_deliver,
     delivery_switch,
 )
+from .g2 import (
+    G2,
+    cap_price,
+    caplet,
+    factor_moments,
+    fit_fast_volatility,
+    zero_rate_correlation,
+)
 from .horizon import horizon_return
 from .hullwhite import (
     Calibration,
@@ -105,7 +113,8 @@ from .options import (
 )
 from .rates import Compounding
 from .risk import buckets_from, instrument_risk, key_rates, level, shape_duration
-from .schedule import Frequency, add_months
+from .schedule import Frequency, add_months, generate
+from .solve import NoRoot
 from .spread import i_spread, z_spread
 
 
@@ -290,6 +299,171 @@ def _note(arguments: argparse.Namespace, reference: date) -> FloatingNote:
         Frequency[arguments.frequency.upper()],
         _basis(arguments.note_basis),
     )
+
+
+
+def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
+    """A cap under the two-factor model, and the parameter it cannot identify.
+
+    The cap price is the easy half. The half worth printing is the correlation
+    table and what follows it: refitting the fast factor's volatility so that
+    this very cap reprices to the same number, the driver correlation can be
+    moved across its whole range and the cap will not notice. The report puts
+    the resulting zero-rate correlations beside the cap prices so that the two
+    columns can be read together -- identical to rounding on the left, spanning
+    almost the whole interval on the right.
+
+    A cap is a strip of options on single bonds, so this is structural rather
+    than a numerical accident: no price here depends on the joint law of two
+    maturities. Identifying it needs an instrument whose payoff does, and this
+    module does not have one.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    curve = discounting.curve
+    basis = _basis(arguments.time_basis)
+    model = G2(
+        a=arguments.mean_reversion,
+        sigma=arguments.volatility,
+        b=arguments.slow_mean_reversion,
+        eta=arguments.slow_volatility,
+        rho=arguments.correlation,
+    )
+
+    start = date.fromisoformat(arguments.start)
+    end = date.fromisoformat(arguments.end)
+    if end <= start:
+        raise BadInput(f"the cap ends at {arguments.end} and starts at {arguments.start}")
+    frequency = Frequency[arguments.frequency.upper()]
+    # Through the package's own schedule generator rather than by adding months
+    # here: the rolling convention, the end-of-month rule and the stub
+    # placement are decisions this file has no business making again, and
+    # `Rolling.MODIFIED_FOLLOWING` is the default for a reason.
+    periods = generate(start, end, frequency, calendar=WEEKENDS_ONLY).periods
+    # The rate fixes at the adjusted start and the money moves on the payment
+    # date, so those are the bond option's expiry and the bond's maturity. The
+    # accrual is measured between the adjusted boundaries, which is what a
+    # floating payment accrues on.
+    times = [year_fraction(reference, periods[0].adjusted_start, basis)]
+    accruals = []
+    for period in periods:
+        times.append(year_fraction(reference, period.payment, basis))
+        accruals.append(year_fraction(period.adjusted_start, period.adjusted_end, basis))
+
+    value = cap_price(
+        curve, model, dates=times, strike=arguments.strike, accruals=accruals,
+        floor=arguments.floor,
+    )
+    caplets = [
+        {
+            "start": periods[index].adjusted_start.isoformat(),
+            "end": periods[index].payment.isoformat(),
+            "accrual": accruals[index],
+            "value": caplet(
+                curve,
+                model,
+                start=times[index],
+                end=times[index + 1],
+                strike=arguments.strike,
+                accrual=accruals[index],
+                floor=arguments.floor,
+            ),
+        }
+        for index in range(len(times) - 1)
+    ]
+
+    horizon = arguments.horizon
+    probes = [horizon + gap for gap in (1.0, 2.0, 5.0, 10.0) if horizon + gap <= times[-1]]
+    correlations = [
+        {
+            "first": probes[0] - horizon,
+            "second": later - horizon,
+            "correlation": zero_rate_correlation(model, horizon, probes[0], later).value,
+        }
+        for later in probes[1:]
+    ]
+
+    payload: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "instrument": "floor" if arguments.floor else "cap",
+        "strike": arguments.strike,
+        "value": value,
+        "caplets": caplets,
+        "model": {
+            "fast_mean_reversion": model.a,
+            "fast_volatility": model.sigma,
+            "slow_mean_reversion": model.b,
+            "slow_volatility": model.eta,
+            "driver_correlation": model.rho,
+            "effective_volatility_if_speeds_agreed": model.effective_volatility,
+        },
+        "curve_repricing_error": model.curve_error(curve),
+        "short_rate_shift": {
+            "horizon": horizon,
+            "phi": model.short_rate_mean(curve, horizon),
+            "instantaneous_forward": curve.instantaneous_forward(horizon),
+        },
+        "correlations": correlations,
+        "factor_correlation": factor_moments(model, horizon).correlation,
+    }
+
+    # The identification table. Nothing is being calibrated to market here --
+    # the point is the opposite, that the cap does not constrain rho at all.
+    if arguments.identify:
+        rows: list[dict[str, object]] = []
+        pair = probes[0], probes[-1]
+        for trial_rho in (-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9):
+            template = G2(
+                a=model.a, sigma=model.sigma, b=model.b, eta=model.eta, rho=trial_rho
+            )
+            try:
+                root = fit_fast_volatility(
+                    curve,
+                    template,
+                    dates=times,
+                    strike=arguments.strike,
+                    target=value,
+                    accruals=accruals,
+                    floor=arguments.floor,
+                )
+            except NoRoot as unreachable:
+                # Not a failure to report as one. A cap price is not monotone
+                # in sigma at a negative rho, so a target below the cheapest
+                # attainable price genuinely cannot be matched there -- which
+                # is itself part of the answer about what a cap constrains.
+                rows.append(
+                    {
+                        "driver_correlation": trial_rho,
+                        "reachable": False,
+                        "reason": str(unreachable),
+                    }
+                )
+                continue
+            fitted = G2(
+                a=model.a, sigma=root.value, b=model.b, eta=model.eta, rho=trial_rho
+            )
+            matched = cap_price(
+                curve,
+                fitted,
+                dates=times,
+                strike=arguments.strike,
+                accruals=accruals,
+                floor=arguments.floor,
+            )
+            rows.append(
+                {
+                    "driver_correlation": trial_rho,
+                    "reachable": True,
+                    "fast_volatility": fitted.sigma,
+                    "value": matched,
+                    "relative_gap": matched / value - 1.0 if value else 0.0,
+                    "zero_rate_correlation": zero_rate_correlation(
+                        fitted, horizon, pair[0], pair[1]
+                    ).value,
+                }
+            )
+        payload["identification"] = rows
+    return payload
 
 
 # -- the subcommands ----------------------------------------------------------
@@ -1938,6 +2112,80 @@ def parser() -> argparse.ArgumentParser:
         help="day count the volatility's time to expiry is measured in",
     )
     swaption.set_defaults(run=run_swaption)
+
+    g2 = subcommands.add_parser(
+        "g2",
+        help="price a cap under two factors, and show what it cannot identify",
+        description=(
+            "Prices a cap or floor under the two-factor additive Gaussian model, "
+            "reports the correlations between zero rates that the second factor "
+            "makes possible, and then -- with --identify -- refits the fast "
+            "factor's volatility across the whole range of the driver "
+            "correlation so that this very cap reprices to the same number. The "
+            "cap column comes out identical to rounding and the correlation "
+            "column spans almost the whole interval, which is the point: a cap "
+            "is a strip of options on single bonds and carries no information "
+            "about the joint law of two maturities."
+        ),
+    )
+    shared(g2)
+    g2.add_argument("--start", required=True, help="first fixing date, ISO")
+    g2.add_argument("--end", required=True, help="last payment date, ISO")
+    g2.add_argument(
+        "--frequency",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+    )
+    g2.add_argument("--strike", required=True, type=float, help="the cap rate, as 0.038")
+    g2.add_argument("--floor", action="store_true", help="price the floor instead")
+    g2.add_argument(
+        "--mean-reversion",
+        dest="mean_reversion",
+        required=True,
+        type=float,
+        help="the fast factor's a, in reciprocal years",
+    )
+    g2.add_argument(
+        "--volatility", required=True, type=float, help="the fast factor's sigma"
+    )
+    g2.add_argument(
+        "--slow-mean-reversion",
+        dest="slow_mean_reversion",
+        required=True,
+        type=float,
+        help="the slow factor's b; equal to a collapses the model to one factor",
+    )
+    g2.add_argument(
+        "--slow-volatility",
+        dest="slow_volatility",
+        required=True,
+        type=float,
+        help="the slow factor's eta",
+    )
+    g2.add_argument(
+        "--correlation",
+        required=True,
+        type=float,
+        help="rho between the two drivers, strictly inside (-1, 1)",
+    )
+    g2.add_argument(
+        "--horizon",
+        type=float,
+        default=1.0,
+        help="years ahead at which the zero-rate correlations are measured",
+    )
+    g2.add_argument(
+        "--identify",
+        action="store_true",
+        help="refit the fast volatility across rho, holding this cap's price fixed",
+    )
+    g2.add_argument(
+        "--time-basis",
+        dest="time_basis",
+        default=Basis.ACT_365F.name,
+        choices=[one.name for one in Basis],
+    )
+    g2.set_defaults(run=run_g2)
 
     hullwhite = subcommands.add_parser(
         "hullwhite",

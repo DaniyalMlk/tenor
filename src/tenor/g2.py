@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from .curve import DiscountCurve
 from .hullwhite import BadModel
 from .options import Payoff
+from .solve import NoRoot, Root, brent
 
 __all__ = [
     "G2",
@@ -87,6 +88,7 @@ __all__ = [
     "cap_price",
     "caplet",
     "factor_moments",
+    "fit_fast_volatility",
     "simulate_factors",
     "zero_rate_correlation",
 ]
@@ -686,3 +688,84 @@ def simulate_factors(
         second = generator.gauss(0.0, 1.0)
         draws.append((first_scale * first, loading * first + residual_scale * second))
     return draws
+
+
+def fit_fast_volatility(
+    curve: DiscountCurve,
+    model: G2,
+    *,
+    dates: Sequence[float],
+    strike: float,
+    target: float,
+    accruals: Sequence[float] | None = None,
+    floor: bool = False,
+    upper: float = 1.0,
+    nodes: int = 80,
+) -> Root:
+    """Solve for the fast factor's ``sigma`` that reprices a cap to ``target``.
+
+    Everything else in ``model`` is held, including ``rho``, which is what
+    makes this the tool for the identification question: run it across ``rho``
+    and the cap price stays put while the correlation structure does not.
+
+    **A cap price is not monotone in ``sigma``, and a bisection that assumes it
+    is will fail silently.** The bond option variance is
+    ``sigma**2 A + eta**2 B + 2 rho sigma eta C`` with ``A``, ``B``, ``C``
+    positive, so at a negative ``rho`` it is a parabola in ``sigma`` with a
+    minimum at ``-rho eta C / A``, strictly inside the domain. Raising
+    ``sigma`` from zero there *lowers* the cap. A plain bisection from a floor
+    to a ceiling then converges to the floor and returns a price a third away
+    from the target while reporting success, which is how this was found.
+
+    So the bracket is searched for rather than assumed: the price is evaluated
+    on a geometric grid and the first interval where it crosses ``target`` from
+    below is handed to Brent. That picks the upper branch, which is the
+    economically sensible root — the one where more volatility means a dearer
+    cap.
+
+    Args:
+        curve: The initial curve.
+        model: The parameters, whose ``sigma`` is replaced by the answer.
+        dates: Period boundaries, as for :func:`cap_price`.
+        strike: The cap rate.
+        target: The price to match.
+        accruals: Year fractions, as for :func:`cap_price`.
+        floor: Fit a floor instead.
+        upper: Largest ``sigma`` to consider.
+        nodes: Grid resolution for the bracket search.
+
+    Returns:
+        A :class:`~tenor.solve.Root`, whose ``value`` is the fitted ``sigma``.
+
+    Raises:
+        NoRoot: If the price never reaches ``target`` from below on
+            ``(0, upper]``. The message carries the cheapest price available,
+            because an unreachable target is a statement about the quote.
+        BadModel: If ``upper`` or ``nodes`` are out of range.
+    """
+    if not math.isfinite(upper) or upper <= 0.0:
+        raise BadModel(f"upper must be finite and positive, got {upper!r}")
+    if nodes < 3:
+        raise BadModel(f"nodes must be at least 3, got {nodes!r}")
+
+    def price_at(sigma: float) -> float:
+        trial = G2(a=model.a, sigma=sigma, b=model.b, eta=model.eta, rho=model.rho)
+        return cap_price(
+            curve, trial, dates=dates, strike=strike, accruals=accruals, floor=floor
+        )
+
+    floor_sigma = upper * 1e-9
+    grid = [
+        floor_sigma * (upper / floor_sigma) ** (index / (nodes - 1)) for index in range(nodes)
+    ]
+    prices = [price_at(sigma) for sigma in grid]
+    for index in range(nodes - 1):
+        if prices[index] < target <= prices[index + 1]:
+            return brent(lambda sigma: price_at(sigma) - target, grid[index], grid[index + 1])
+    raise NoRoot(
+        f"no fast volatility in (0, {upper!r}] reprices this to {target!r} from below. "
+        f"The cheapest price on the grid is {min(prices)!r} and the dearest is "
+        f"{max(prices)!r}. A cap price is not monotone in sigma at a negative rho, "
+        "so a target below the cheapest attainable price is unreachable however the "
+        "search is widened."
+    )
