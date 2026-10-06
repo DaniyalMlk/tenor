@@ -559,6 +559,35 @@ class Replication:
         return abs(self.tail / self.value)
 
 
+def _deterministic(payoff: Fixing, forward: float, factor: float) -> Replication:
+    """What a replication is worth when the rate cannot move.
+
+    At zero volatility the swap rate is known to be the forward, so the payoff
+    is a fixed cashflow on a known date and the value is the discount factor
+    times it. That is exact and needs neither the mapping nor the quadrature,
+    which is the reason to answer it here rather than to let a degenerate
+    integration range do it: going through ``alpha(F)`` instead leaves the
+    adjustment at -6.9e-18 rather than at zero, and a degenerate range cannot
+    cover an option's kink at all, so a strike away from the forward was being
+    refused where its intrinsic value was the obvious answer.
+    """
+    value = factor * payoff.value(forward)
+    return Replication(
+        value=value,
+        raw=value,
+        measure=1.0,
+        intrinsic=value,
+        mass=0.0,
+        above=0.0,
+        below=0.0,
+        lower=forward,
+        upper=forward,
+        tail=0.0,
+        panels=0,
+        nodes=0,
+    )
+
+
 def _legendre(degree: int, point: float) -> tuple[float, float]:
     """``(P_n(x), P_n'(x))`` by the three-term recurrence.
 
@@ -849,6 +878,8 @@ class ConstantMaturity:
                 f"fixing {self.name} pays on {self.payment.isoformat()}, where the "
                 f"curve puts a discount factor of {factor!r}"
             )
+        if smile(forward) * math.sqrt(time) <= 0.0:
+            return _deterministic(payoff, forward, factor)
         lower, upper = self._range(forward, mapping, smile, time, quadrature)
         parts = self._expand(
             payoff, mapping, forward, annuity, lower, upper, smile, time, quadrature
