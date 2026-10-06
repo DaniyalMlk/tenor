@@ -1296,6 +1296,137 @@ def swaption_arguments(curves: tuple[str, str]) -> list[str]:
     ]
 
 
+def cms_arguments(curves: tuple[str, str]) -> list[str]:
+    ois, forecast = curves
+    return [
+        "cms",
+        ois,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--forecast",
+        forecast,
+        "--expiry",
+        "2031-01-15",
+        "--tenor-years",
+        "10",
+        "--delay-months",
+        "6",
+        "--fixed-frequency",
+        "ANNUAL",
+        "--volatility",
+        "0.24",
+    ]
+
+
+def test_cms_reports_the_adjustment_and_the_mapping_behind_it(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *cms_arguments(long_curves)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["cms_rate"] > payload["forward_swap_rate"]
+    assert payload["adjustment_basis_points"] == pytest.approx(
+        1e4 * (payload["cms_rate"] - payload["forward_swap_rate"]), rel=1e-12
+    )
+    # Tens of basis points, not a rounding concern on the rate it adjusts.
+    assert 10.0 < payload["adjustment_basis_points"] < 60.0
+
+    mapping = payload["mapping"]
+    # The scale is the rescaling onto the curve; near one, and not one.
+    assert 0.95 < mapping["scale"] < 1.0
+    assert mapping["scale"] != 1.0
+    # The payment falls well before the annuity's own weighted mean, so the
+    # slope is positive and so is the adjustment.
+    assert mapping["slope"] > 0.0
+    assert mapping["annuity_mean_payment_years"] == pytest.approx(5.19, abs=0.05)
+
+    replication = payload["replication"]
+    # A swaplet has no kink, so the whole of the convexity is in the integrals.
+    assert replication["point_mass"] == 0.0
+    assert replication["payer_leg"] > 0.0
+    assert replication["receiver_leg"] > 0.0
+    assert replication["truncation"] < 1e-20
+    # The model's residual arbitrage is reported rather than hidden.
+    assert 0.0 < replication["model_arbitrage"] < 0.01
+
+
+def test_cms_walks_the_payment_date_down_through_zero(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The table that says the adjustment is not simply growing with time."""
+    assert (
+        main(["--json", *cms_arguments(long_curves), "--delays", "0", "6", "60", "120"])
+        == 0
+    )
+    walk = json.loads(capsys.readouterr().out)["payment_delay"]
+    adjustments = [row["adjustment_basis_points"] for row in walk]
+    slopes = [row["alpha_slope"] for row in walk]
+    assert adjustments == sorted(adjustments, reverse=True)
+    assert adjustments[0] > 0.0 > adjustments[-1]
+    # The sign of the adjustment is the sign of the mapping's slope throughout.
+    assert [one > 0.0 for one in adjustments] == [one > 0.0 for one in slopes]
+
+
+def test_cms_says_which_skews_have_no_answer(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An upward slope is reported as unreachable, not as a number.
+
+    The rows either side of it still price, so this is the surface being
+    refused rather than the command giving up.
+    """
+    assert (
+        main(["--json", *cms_arguments(long_curves), "--skews", "0.0", "-0.3", "0.3"])
+        == 0
+    )
+    rows = json.loads(capsys.readouterr().out)["skew"]
+    assert rows[0]["share_of_flat"] == pytest.approx(1.0, rel=1e-12)
+    assert 0.85 < rows[1]["share_of_flat"] < 1.0
+    assert "unreachable" in rows[2]
+    assert "has not converged" in rows[2]["unreachable"]
+    assert "adjustment_basis_points" not in rows[2]
+
+
+def test_cms_prices_the_strip_beside_the_single_fixing(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(["--json", *cms_arguments(long_curves), "--leg-maturity", "2034-01-15"])
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    leg = payload["leg"]
+    assert leg["fixings"] == 12
+    assert leg["swaplets"] > 0.0
+    # Struck at the forward of the single fixing, so the cap is worth more than
+    # the floor: every fixing's own adjusted rate sits above that strike.
+    assert leg["cap"] > leg["floor"] > 0.0
+
+
+def test_cms_refuses_a_basis_spread_file(
+    tmp_path: Path, long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    ois, _ = long_curves
+    spreads = tmp_path / "spreads.txt"
+    spreads.write_text("basis  2031-01-15  0.0008  SEMI_ANNUAL\n")
+    arguments = cms_arguments((ois, str(spreads)))
+    assert main(arguments) == 2
+    assert "different index" in capsys.readouterr().err
+
+
+def test_cms_takes_the_normal_convention(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = cms_arguments(long_curves)
+    arguments[arguments.index("0.24")] = "0.0080"
+    assert main(["--json", *arguments, "--normal"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["convention"] == "normal"
+    assert payload["adjustment_basis_points"] > 0.0
+
+
 def test_swaption_reports_the_annuity_the_rate_and_both_sensitivities(
     long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:

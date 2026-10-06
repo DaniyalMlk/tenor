@@ -43,6 +43,14 @@ from . import __version__
 from .bond import Accrual, Bond
 from .bootstrap import Bootstrapped, bootstrap
 from .calendar import WEEKENDS_ONLY
+from .cms import (
+    BadConvexity,
+    ConstantMaturity,
+    ConstantMaturityLeg,
+    Quadrature,
+    Strike,
+    measure_error,
+)
 from .credit import (
     CreditDefaultSwap,
     bootstrap_hazards,
@@ -300,6 +308,212 @@ def _note(arguments: argparse.Namespace, reference: date) -> FloatingNote:
         _basis(arguments.note_basis),
     )
 
+
+
+def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
+    """A CMS fixing, its convexity adjustment, and the two things that move it.
+
+    The adjustment is the point of the report and the two tables beside it are
+    the reason it is not a single number. One walks the payment date: the
+    adjustment falls as the payment moves later, through zero at the annuity's
+    own weighted mean payment time, which is the opposite of what a reading of
+    "convexity grows with time" would suggest. The other walks the skew with
+    the at-the-money volatility held fixed, so every row prices the same
+    at-the-money swaption and none of them agrees about the CMS.
+
+    The truncation column is there because a replication against a surface
+    sloping up in strike does not converge, and the number it returns in that
+    case is a function of the ceiling rather than of the market.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    index = ForecastIndex(
+        tenor=Frequency[arguments.index_tenor.upper()],
+        basis=_basis(arguments.index_basis),
+    )
+    quotes, spreads = parse_forecast_quotes(
+        Path(arguments.forecast).read_text(), reference, index
+    )
+    if spreads:
+        raise BadInput(
+            "a CMS needs a projection curve for its own index, and a file of "
+            "tenor basis spreads solves a different index's curve. Build the "
+            "index curve from forward or swap quotes instead."
+        )
+    forecast = bootstrap_forecast(
+        reference,
+        quotes,
+        discount=discounting.curve,
+        basis=_basis(arguments.basis),
+        interpolation=_interpolation(arguments.interpolation),
+    )
+    curve = discounting.curve
+    projection = forecast.curve
+
+    expiry = date.fromisoformat(arguments.expiry)
+    maturity = add_months(expiry, 12 * arguments.tenor_years, keep_end_of_month=True)
+    payment = (
+        date.fromisoformat(arguments.payment)
+        if arguments.payment
+        else add_months(expiry, arguments.delay_months, keep_end_of_month=True)
+    )
+    quadrature = Quadrature(
+        convention=Convention.NORMAL if arguments.normal else Convention.LOGNORMAL,
+        vol_basis=_basis(arguments.vol_basis),
+        width=arguments.width,
+        panels=arguments.panels,
+        nodes=arguments.nodes,
+    )
+
+    def fixing(pays: date) -> ConstantMaturity:
+        return ConstantMaturity(
+            expiry=expiry,
+            effective=expiry,
+            maturity=maturity,
+            payment=pays,
+            index=index,
+            frequency=Frequency[arguments.fixed_frequency.upper()],
+            basis=_basis(arguments.fixed_basis),
+        )
+
+    here = fixing(payment)
+    swaplet = here.swaplet(curve, projection, arguments.volatility, quadrature=quadrature)
+    mapping = here.mapping(curve, projection)
+    fixed = here.swaption(0.0).swap.fixed_schedule()
+    weighted = 0.0
+    total = 0.0
+    for period in fixed:
+        weight = year_fraction(
+            period.start, period.end, _basis(arguments.fixed_basis)
+        ) * curve.discount(period.payment)
+        weighted += weight * year_fraction(
+            expiry, period.payment, _basis(arguments.fixed_basis)
+        )
+        total += weight
+
+    payload: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "expiry": expiry.isoformat(),
+        "swap_maturity": maturity.isoformat(),
+        "payment": payment.isoformat(),
+        "volatility": arguments.volatility,
+        "convention": quadrature.convention.value,
+        "forward_swap_rate": swaplet.forward,
+        "cms_rate": swaplet.rate,
+        "adjustment": swaplet.adjustment,
+        "adjustment_basis_points": swaplet.basis_points,
+        "value": swaplet.value,
+        "discount": swaplet.discount,
+        "mapping": {
+            "scale": mapping.scale,
+            "alpha": mapping.value(swaplet.forward),
+            "slope": mapping.slope(swaplet.forward),
+            "curvature": mapping.curvature(swaplet.forward),
+            "annuity_mean_payment_years": weighted / total,
+        },
+        "replication": {
+            "lower_strike": swaplet.replication.lower,
+            "upper_strike": swaplet.replication.upper,
+            "point_mass": swaplet.replication.mass,
+            "payer_leg": swaplet.replication.above,
+            "receiver_leg": swaplet.replication.below,
+            "truncation": swaplet.replication.truncation,
+            "model_arbitrage": measure_error(
+                here, curve, projection, arguments.volatility, quadrature=quadrature
+            ),
+            "panels": swaplet.replication.panels,
+            "nodes": swaplet.replication.nodes,
+        },
+    }
+
+    # What the payment date is worth, which is where the sign lives.
+    if arguments.delays:
+        walk: list[dict[str, float]] = []
+        for months in arguments.delays:
+            later = fixing(add_months(expiry, months, keep_end_of_month=True))
+            moved = later.swaplet(
+                curve, projection, arguments.volatility, quadrature=quadrature
+            )
+            walk.append(
+                {
+                    "delay_months": float(months),
+                    "adjustment_basis_points": moved.basis_points,
+                    "alpha_slope": later.mapping(curve, projection).slope(
+                        moved.forward
+                    ),
+                }
+            )
+        payload["payment_delay"] = walk
+
+    # And what the skew is worth, holding the at-the-money volatility fixed.
+    if arguments.skews:
+        tilted: list[dict[str, object]] = []
+        for slope in arguments.skews:
+            def surface(strike: float, slope: float = slope) -> float:
+                level = float(arguments.volatility) + slope * (
+                    strike - swaplet.forward
+                )
+                return min(max(level, 0.02), 2.0)
+
+            try:
+                skewed = here.swaplet(
+                    curve, projection, surface, quadrature=quadrature
+                )
+            except BadConvexity as problem:
+                tilted.append({"skew": slope, "unreachable": str(problem)})
+                continue
+            tilted.append(
+                {
+                    "skew": slope,
+                    "adjustment_basis_points": skewed.basis_points,
+                    "share_of_flat": (
+                        skewed.adjustment / swaplet.adjustment
+                        if swaplet.adjustment != 0.0
+                        else 0.0
+                    ),
+                    "truncation": skewed.replication.truncation,
+                }
+            )
+        payload["skew"] = tilted
+
+    # The strip, when a leg was asked for rather than one fixing.
+    if arguments.leg_maturity:
+        leg = ConstantMaturityLeg(
+            effective=expiry,
+            maturity=date.fromisoformat(arguments.leg_maturity),
+            tenor_years=arguments.tenor_years,
+            index=index,
+            frequency=Frequency[arguments.fixed_frequency.upper()],
+            basis=_basis(arguments.fixed_basis),
+        )
+        strike = (
+            arguments.strike if arguments.strike is not None else swaplet.forward
+        )
+        payload["leg"] = {
+            "maturity": leg.maturity.isoformat(),
+            "fixings": len(leg.fixings(reference)),
+            "swaplets": leg.value(
+                curve, projection, arguments.volatility, quadrature=quadrature
+            ),
+            "strike": strike,
+            "cap": leg.value(
+                curve,
+                projection,
+                arguments.volatility,
+                strike=strike,
+                side=Strike.ABOVE,
+                quadrature=quadrature,
+            ),
+            "floor": leg.value(
+                curve,
+                projection,
+                arguments.volatility,
+                strike=strike,
+                side=Strike.BELOW,
+                quadrature=quadrature,
+            ),
+        }
+    return payload
 
 
 def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
@@ -2112,6 +2326,132 @@ def parser() -> argparse.ArgumentParser:
         help="day count the volatility's time to expiry is measured in",
     )
     swaption.set_defaults(run=run_swaption)
+
+    cms = subcommands.add_parser(
+        "cms",
+        help="price a constant maturity swap and show what moves the adjustment",
+        description=(
+            "Builds both curves exactly as 'multicurve' does, then prices one "
+            "CMS fixing by static replication over the swaptions on the same "
+            "surface. The adjustment is the gap between what the contract pays "
+            "in expectation and the forward swap rate, which differ because the "
+            "rate is a martingale under the fixed-leg annuity and the contract "
+            "settles against a single payment date. Two tables say why it is "
+            "not one number: walking the payment date, which takes the "
+            "adjustment down through zero at the annuity's own weighted mean "
+            "payment time, and walking the skew with the at-the-money "
+            "volatility held fixed, so every row prices the same at-the-money "
+            "swaption and none agrees about the CMS. A surface sloping up in "
+            "strike has no answer at all, and those rows report that rather "
+            "than a number the ceiling chose."
+        ),
+    )
+    shared(cms)
+    cms.add_argument(
+        "--forecast",
+        required=True,
+        help="a file of forward or swap quotes on the index",
+    )
+    cms.add_argument("--expiry", required=True, help="when the rate fixes, ISO")
+    cms.add_argument(
+        "--tenor-years",
+        dest="tenor_years",
+        type=int,
+        required=True,
+        help="the tenor of the swap rate being paid, in whole years",
+    )
+    cms.add_argument(
+        "--payment",
+        default=None,
+        help="when the money moves, ISO; defaults to --delay-months after the fixing",
+    )
+    cms.add_argument(
+        "--delay-months",
+        dest="delay_months",
+        type=int,
+        default=0,
+        help="months from the fixing to the payment when --payment is not given",
+    )
+    cms.add_argument(
+        "--volatility",
+        type=float,
+        required=True,
+        help="at-the-money, annualised, lognormal unless --normal is passed",
+    )
+    cms.add_argument(
+        "--normal",
+        action="store_true",
+        help=(
+            "read the volatility as a Bachelier one in absolute units of the "
+            "rate, which is the only convention a negative forward has"
+        ),
+    )
+    cms.add_argument(
+        "--delays",
+        type=int,
+        nargs="+",
+        default=(),
+        metavar="MONTHS",
+        help="payment delays to walk, in months from the fixing",
+    )
+    cms.add_argument(
+        "--skews",
+        type=float,
+        nargs="+",
+        default=(),
+        metavar="SLOPE",
+        help=(
+            "volatility slopes per unit of rate to walk, with the at-the-money "
+            "point held fixed; a positive one does not converge and says so"
+        ),
+    )
+    cms.add_argument(
+        "--leg-maturity",
+        dest="leg_maturity",
+        default=None,
+        help="price the strip to this maturity as well as the single fixing, ISO",
+    )
+    cms.add_argument(
+        "--strike",
+        type=float,
+        default=None,
+        help="strike for the leg's cap and floor; defaults to the forward",
+    )
+    cms.add_argument("--width", type=float, default=10.0, help="ceiling, in sigma")
+    cms.add_argument("--panels", type=int, default=64)
+    cms.add_argument("--nodes", type=int, default=8)
+    cms.add_argument(
+        "--index-tenor",
+        dest="index_tenor",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+    )
+    cms.add_argument(
+        "--index-basis",
+        dest="index_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+    )
+    cms.add_argument(
+        "--fixed-frequency",
+        dest="fixed_frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+    )
+    cms.add_argument(
+        "--fixed-basis",
+        dest="fixed_basis",
+        default=Basis.THIRTY_360_BOND.name,
+        choices=[one.name for one in Basis],
+    )
+    cms.add_argument(
+        "--vol-basis",
+        dest="vol_basis",
+        default=Basis.ACT_365F.name,
+        choices=[one.name for one in Basis],
+        help="day count the volatility's time to expiry is measured in",
+    )
+    cms.set_defaults(run=run_cms)
 
     g2 = subcommands.add_parser(
         "g2",
