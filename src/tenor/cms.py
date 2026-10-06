@@ -15,66 +15,94 @@ payment date, the change of measure carries the ratio::
     alpha(S) = P(T, Tp) / A(T)
 
 :class:`AnnuityMap` is that ``alpha``, as a function of the rate rather than as
-a constant, which is the whole of the modelling in this module. Everything else
-is the Carr-Madan expansion of ``g alpha`` around the forward and a quadrature
+a constant, which is the whole of the modelling here. Everything above it is
+the Carr-Madan expansion of ``g alpha`` around the forward and a quadrature
 over the swaptions the package already prices, so a CMS is valued out of the
-same volatility surface a swaption book is marked on rather than out of a
-separate model.
+same surface a swaption book is marked on rather than out of a separate model.
 
-**The identity that validates the whole construction is the constant payoff.**
-``g == 1`` must come back worth ``P(0, Tp)``, because paying one unit at one
-date is a zero-coupon bond. It is not an approximation of anything, it uses the
-same mapping, the same expansion and the same quadrature as a real payoff, and
-it is sensitive to all three — so :func:`measure_error` reports it as a number
-and the tests assert it, rather than asserting a price against a figure this
-module produced itself. On the ten-year structure in the tests it is 8.6e-14
-relative, which is the quadrature's own floor.
+**A single period reduces exactly, and that is the load-bearing check.** If the
+underlying swap has one fixed period and the CMS pays at the end of it, then
+``A(T) = delta P(T, Tp)`` identically, so ``alpha`` is ``1 / delta`` — flat in
+the rate, every derivative of it zero, and the convexity adjustment
+**identically 0.0**. It has to be: that contract is a forward rate paid in
+arrears, which needs no adjustment at all. The replication is then the point
+mass at the kink and nothing else, so it matches :mod:`tenor.options` to
+**5e-16** across four strikes and both payoffs. It is the only check here that
+would catch the point mass carrying the wrong sign, which is the class of error
+that cost :mod:`tenor.g2` a call and a put.
 
-**The flat-curve mapping is arbitrageable before it is rescaled.** The standard
-model evaluates ``alpha`` by assuming the curve is flat at the level ``S`` when
-the rate fixes, which makes ``P(T, Tp)`` and ``A(T)`` explicit powers of
-``1 + S/q``. The trouble is that at the forward it then returns the *flat
-curve's* ratio, not the real one: on the upward-sloping curve in the tests the
-raw mapping prices the unit payoff 2.47% away from ``P(0, Tp)``, so a CMS and
-a zero-coupon bond disagree about the same cashflow by a quarter of the
-convexity adjustment itself. :func:`annuity_map` therefore scales the mapping
-so that ``alpha(F)`` is the curve's own ``P(0, Tp) / A(0)`` exactly, which
-costs nothing — the shape in ``S`` is what the model is for — and makes the
-unit payoff reprice to rounding instead of to a quarter of a basis point.
+**The second moment has a closed form, and that is what validates the
+quadrature.** Against that same flat mapping, replicating ``S**2`` must return
+``F**2 exp(sigma**2 T)`` under Black and ``F**2 + sigma**2 T`` under Bachelier.
+No model enters either statement, so it checks the expansion, the Gauss rule
+and the panel layout against arithmetic from outside this package — both to
+**rounding**. It is also the only functional here that is sensitive to the far
+tail, which is how the panel spacing below was found out.
 
-**A single period reduces exactly, and that is the check that caught the
-sign.** If the underlying swap has one fixed period and the CMS pays at the end
-of it, then ``A(T) = delta P(T, Tp)`` identically, so ``alpha == 1/delta`` is
-constant, every derivative of it is zero and the convexity adjustment is
-**identically zero**. It has to be: that contract is a forward rate paid in
-arrears, which needs no adjustment at all. The scale factor is exactly one
-there too, because the curve's own ratio is also ``1/delta``. The tests assert
-the adjustment at 0.0 and the CMS caplet against ``tenor.options`` at 3.6e-16
-relative across four strikes and both payoffs.
+**Uniform panels make a wider ceiling worse, not better.** The lognormal
+ceiling is ``F exp(w sigma sqrt(T))``, so it moves out exponentially in ``w``
+while the panel count stays put: every extra standard deviation coarsens the
+mesh *at the forward*, where the integrand lives. On the second moment, uniform
+panels gave relative errors of 1.4e-09, 3.2e-08, 7.9e-04 and 1.8e-01 as the
+ceiling went from six standard deviations to twenty — monotonically worse, by
+eight orders of magnitude, for covering more of the distribution. Spacing the
+edges evenly in ``log K`` holds every ceiling from eight to thirty at rounding,
+and sixteen panels then reach 5.1e-13.
 
-**What the adjustment is worth, measured.** On a ten-year CMS fixing in five
-years, paid annually, off the upward-sloping curve in the tests at a flat 24%
-lognormal volatility, the adjustment is **+21.0 basis points** on a forward
-swap rate of 4.3755% — 0.48% of the rate, and about seven times the bid-offer
-anybody is quoting. It scales close to the square of the volatility, as the
-expansion says it should: 5.5, 21.0 and 46.2 basis points at 12%, 24% and 36%.
+**The flat-curve mapping is arbitrageable, twice over.** The standard model
+evaluates ``alpha`` by assuming the curve is flat at whatever level the rate
+fixes at, which makes ``P(T, Tp)`` and ``A(T)`` explicit powers of ``1 + S/q``.
+Raw, it returns the *flat curve's* ratio at the forward rather than the real
+one: on the upward-sloping curve in the tests it prices a zero-coupon bond
+**0.88% wrong**, a quarter of the convexity adjustment it exists to compute.
+:func:`annuity_map` scales that away at the forward — and the constant payoff
+is then *still* worth 0.217% more than the bond it is, because matching at one
+point does not match an expectation. So :meth:`ConstantMaturity.replicate`
+divides by the replicated unit payoff, which enforces the one no-arbitrage
+condition available, moves the adjustment by **3.6%**, and is a no-op wherever
+the mapping is constant or the volatility is zero — so no reduction above is
+disturbed. :func:`measure_error` reports the gap rather than hiding it.
 
-**Payment delay is a second, independent source of it**, and it is the larger
-one per unit of time. Moving the payment of that same fixing out from the
-fixing date to six months and then a year after it takes the adjustment from
-**19.9 to 21.0 to 22.1 basis points**, roughly linearly in the delay, because
-the delay enters ``alpha`` through a power of the rate and the expansion picks
-up its curvature.
+**What the adjustment is worth, measured.** On a ten-year rate fixing in five
+years and paid six months later, off that curve at a flat 24% lognormal
+volatility, it is **+26.06 basis points** on a forward swap rate of 4.1053% —
+0.63% of the rate, and several times any spread being quoted on it.
 
-**And the adjustment is a smile instrument, which is the practical reason this
-module exists.** It is an integral of swaption prices across every strike, so
-it reads the whole surface and not the at-the-money point. Repricing the same
-fixing off a surface with the at-the-money volatility unchanged and a skew of
--0.30 per unit of rate — ordinary for a swaption grid — moves the adjustment
-from 21.0 to **14.9 basis points**, a 29% change in the number from a change
-that leaves every at-the-money swaption worth exactly what it was. Marking a
-CMS off an at-the-money volatility is not a simplification of this; it is a
-different answer.
+**It is not quadratic in the volatility**, which is the usual rule of thumb.
+The expansion is leading-order in the variance and at low volatility that
+holds, but the ratio of the adjustment to ``sigma**2`` runs 0.0382, 0.0395,
+0.0452, 0.0570 and 0.0773 at volatilities of 6%, 12%, 24%, 36% and 48%. It
+doubles across the range, so scaling a 24% adjustment up to 48% underestimates
+it by a third.
+
+**Paying later unwinds the convexity rather than compounding it.** This came
+out against the guess. Moving the payment of that fixing from the fixing date
+out to ten years past it takes the adjustment **29.28, 26.06, 22.92, 16.83,
+5.43, 0.07 and -23.86 basis points** — monotonically down, and through zero.
+The sign is the sign of ``alpha'(F)``, and ``alpha'(F)`` vanishes where the
+payment date meets the annuity's own annuity-weighted mean payment time: that
+mean is **5.1872 years** here and the slope crosses zero at 62 months, which is
+5.1667. Structural rather than coincidental — ``alpha`` is one discount factor
+over a weighted sum of them, so putting the payment at the weighted mean makes
+numerator and denominator respond to the rate alike.
+
+**And it is a smile instrument, which is the practical reason this module
+exists.** The adjustment is an integral of swaption prices across every strike,
+so it reads the whole surface and not the at-the-money point. Against surfaces
+that leave every at-the-money swaption worth exactly what the flat one does, it
+comes to 100.0%, 96.9%, 94.3%, 92.1% and 88.5% of the flat number at skews of
+0, -0.10, -0.20, -0.30 and -0.50 per unit of rate. An 8% error from a marking
+choice no at-the-money quote can see.
+
+**A surface sloping *up* in strike has no answer at all.** A volatility rising
+without bound stops the swaption price decaying, so the integral diverges and
+whatever comes back is a function of the ceiling: the same fixing against a
++0.30 skew reads 35.6 basis points at a six standard deviation ceiling and
+36565 at fourteen. Every one of those is wrong and none looks it, so
+:attr:`Replication.truncation` measures the share of the value beyond the
+ceiling — 5.5e-24 on the flat case, exactly 0.0 against a downward skew, 120%
+here — and :attr:`Quadrature.tolerance` refuses it rather than returning a
+number whose only real input was the ceiling.
 """
 
 from __future__ import annotations
