@@ -1377,11 +1377,126 @@ tenor g2 ois.txt --reference 2026-01-15 --basis ACT_365F \
   --slow-mean-reversion 0.05 --slow-volatility 0.007 --correlation 0.0 --identify
 ```
 
+## A swap rate paid outside the measure it is a martingale under
+
+Every option above is priced by making the forward swap rate a martingale under
+the fixed leg's annuity, which is the measure a swaption settles against. A
+constant maturity swap leaves it: the rate is observed once and paid *once*, on
+a single date, so the expectation wanted is under that date's forward measure,
+and the rate is not a martingale there. The forward read off the curve is a
+biased forecast of what the contract pays.
+
+`tenor.cms` values one by static replication. The change of measure carries
+`alpha(S) = P(T, Tp) / A(T)` — a function of the rate, not a constant — and
+everything above that is the Carr-Madan expansion of `g alpha` around the
+forward and a quadrature over the swaptions already in the package. So a CMS is
+valued off the surface a swaption book is marked on rather than off a separate
+model.
+
+```python
+from datetime import date
+from tenor import ConstantMaturity, Frequency
+
+fixing = ConstantMaturity(
+    expiry=date(2031, 1, 15),      # when the rate fixes
+    effective=date(2031, 1, 15),
+    maturity=date(2041, 1, 15),    # a ten-year rate
+    payment=date(2031, 7, 15),     # paid six months after it fixes
+    frequency=Frequency.ANNUAL,
+)
+swaplet = fixing.swaplet(discount, projection, 0.24)
+swaplet.forward         # 0.041053  the forward swap rate
+swaplet.rate            # 0.043659  what it pays, in expectation
+swaplet.basis_points    # 26.06     the convexity adjustment
+```
+
+### A single period reduces exactly, which is the check that carries the file
+
+If the underlying swap has one fixed period and the CMS pays at the end of it,
+then `A(T) = delta P(T, Tp)` identically, so `alpha` is `1 / delta` — flat in
+the rate, every derivative of it zero, and the adjustment **identically 0.0**.
+It has to be: that contract is a forward rate paid in arrears and needs no
+adjustment, as anyone can say without a model. The replication is then the
+point mass at the kink and nothing else, and it matches `tenor.options` to
+**5e-16** across four strikes and both payoffs. It is the only check here that
+would catch the point mass carrying the wrong sign — the error that cost the
+two-factor model a call and a put.
+
+The quadrature itself is checked against arithmetic from outside the package.
+Against that same flat mapping, replicating `S**2` must return
+`F**2 exp(sigma**2 T)` under Black and `F**2 + sigma**2 T` under Bachelier. Both
+come back at rounding.
+
+### Widening the ceiling made it worse, by eight orders of magnitude
+
+The second moment is the one functional here sensitive to the far tail, and it
+is how the panel layout was found out. The lognormal ceiling is
+`F exp(w sigma sqrt(T))`, so it moves out exponentially in the width while the
+panel count stays put: every extra standard deviation coarsens the mesh *at the
+forward*, where the integrand lives. With uniform panels the relative error ran
+1.4e-09, 3.2e-08, 7.9e-04 and 1.8e-01 as the ceiling went from six standard
+deviations to twenty — monotonically worse for covering more of the
+distribution. Spacing the edges evenly in `log K` holds every ceiling from
+eight to thirty at rounding, and sixteen panels then reach 5.1e-13.
+
+### The flat-curve model is arbitrageable twice, and both are measured
+
+The mapping is evaluated by assuming the curve is flat at whatever level the
+rate fixes at, which makes `P(T, Tp)` and `A(T)` explicit powers of `1 + S/q`.
+Raw, it returns the flat curve's ratio at the forward rather than the real one,
+and prices a zero-coupon bond **0.88% wrong** on the upward-sloping curve in the
+tests — a quarter of the adjustment it exists to compute. `annuity_map` scales
+that away at the forward, and the constant payoff is then *still* worth 0.217%
+more than the bond it is, because matching at a point does not match an
+expectation. The replication divides by the replicated unit payoff, which
+enforces the one no-arbitrage condition available and moves the adjustment by
+**3.6%**. It is a no-op wherever the mapping is constant or the volatility is
+zero, so no reduction above is disturbed, and `measure_error` reports the gap
+rather than hiding it.
+
+### Paying later unwinds the convexity rather than compounding it
+
+This came out against the guess. Moving the payment of that fixing from the
+fixing date out to ten years past it takes the adjustment **29.28, 26.06,
+22.92, 16.83, 5.43, 0.07 and -23.86 basis points** — monotonically down, and
+through zero. The sign is the sign of `alpha'(F)`, and `alpha'(F)` vanishes
+where the payment date meets the annuity's own annuity-weighted mean payment
+time: 5.1872 years here, against a slope that crosses zero at 62 months, which
+is 5.1667. Structural rather than coincidental — `alpha` is one discount factor
+over a weighted sum of them, so putting the payment at the weighted mean makes
+numerator and denominator respond to the rate alike.
+
+### It is a smile instrument, and an upward skew has no answer at all
+
+The adjustment is an integral of swaption prices across every strike, so it
+reads the whole surface and not the at-the-money point. Against surfaces that
+leave every at-the-money swaption worth exactly what the flat one does, it comes
+to 100.0%, 96.9%, 94.3%, 92.1% and 88.5% of the flat number at skews of 0,
+-0.10, -0.20, -0.30 and -0.50 per unit of rate. An 8% error from a marking
+choice no at-the-money quote can see.
+
+A surface sloping *up* in strike is worse than inaccurate. A volatility rising
+without bound stops the swaption price decaying, so the integral diverges and
+whatever comes back is a function of the ceiling: the same fixing against a
++0.30 skew reads 35.6 basis points at a six standard deviation ceiling and
+36565 at fourteen. Every one of those is wrong and none looks it, so
+`Replication.truncation` measures the share of the value beyond the ceiling —
+5.5e-24 flat, exactly 0.0 against a downward skew, 120% here — and the
+quadrature's tolerance refuses it rather than returning a number whose only
+real input was the ceiling.
+
+```bash
+tenor cms ois.txt --reference 2026-01-15 --basis ACT_365F --forecast forward.txt \
+  --expiry 2031-01-15 --tenor-years 10 --delay-months 6 \
+  --fixed-frequency ANNUAL --volatility 0.24 \
+  --delays 0 6 24 60 120 --skews 0.0 -0.3 0.3
+```
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 983 tests
+pytest          # 1363 tests
 mypy --strict
 ruff check .
 ```

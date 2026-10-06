@@ -681,3 +681,98 @@ forward plus one factor, which found a 1.5e-03 relative gap. That is the size
 of the convexity term in `phi`, not a defect: the state map is
 `r(t) = phi(t) + x(t) + y(t)`, and the mapping is now the point of the test
 rather than an incidental detail of it.
+
+## Phase 17 — A rate paid outside the measure it is a martingale under
+
+- [x] The annuity mapping function as a function of the rate, with its first
+      two derivatives, under the flat-curve model
+- [x] The mapping scaled onto the curve, and the residual arbitrage reported
+      rather than left in
+- [x] Static replication of an arbitrary payoff by the Carr-Madan expansion,
+      over the swaptions the package already prices
+- [x] Graded panels, so widening the ceiling cannot cost accuracy at the
+      forward
+- [x] CMS swaplets, caplets and floorlets, and the strip of them a CMS leg is
+- [x] The convexity adjustment as a number in rate terms, not folded into a
+      price
+- [x] A surface the integral does not converge against refused, with the
+      measured share beyond the ceiling in the message
+- [x] A smile taken as a function of strike, since the adjustment reads the
+      whole surface
+- [x] A command-line entry point, with the payment-date and skew tables that
+      say why the adjustment is not one number
+
+Every instrument before this one pays a swap rate against the annuity that rate
+is a martingale under, so the measure never had to be left. A CMS leaves it: the
+rate is observed once and paid once, on a single date, so the expectation wanted
+is under that date's forward measure and the forward read off the curve is a
+biased forecast of what the contract pays. On a ten-year rate fixing in five
+years, paid six months later, at a flat 24% volatility, the bias is **26.06
+basis points** on a 4.1053% forward — 0.63% of the rate.
+
+**A single period reduces exactly, and that is the check that carries the
+file.** One fixed period with the CMS paying at the end of it makes
+`A(T) = delta P(T, Tp)` identically, so the mapping is `1 / delta`, flat in the
+rate, every derivative zero and the adjustment **identically 0.0**. It has to
+be — that contract is a forward rate paid in arrears, which needs no adjustment
+and never did. The replication is then the point mass at the kink and nothing
+else, and it matches `tenor.options` to **5e-16** across four strikes and both
+payoffs. It is the only check here that would catch the point mass carrying the
+wrong sign, which is exactly the error Phase 16 made with a call and a put.
+
+The quadrature is checked against arithmetic from outside the package rather
+than against itself. Against that flat mapping, replicating `S**2` has to return
+`F**2 exp(sigma**2 T)` under Black and `F**2 + sigma**2 T` under Bachelier; both
+come back at rounding, and that is the only statement here with no model in it.
+
+**Widening the ceiling made it worse, which is the second time this has
+happened.** The second moment is the one functional sensitive to the far tail.
+The lognormal ceiling is `F exp(w sigma sqrt(T))`, so it moves out exponentially
+in the width while the panel count stays put, and every extra standard deviation
+coarsens the mesh at the forward where the integrand lives. Uniform panels gave
+1.4e-09, 3.2e-08, 7.9e-04 and 1.8e-01 relative as the ceiling went from six
+standard deviations to twenty — monotonically worse for covering more of the
+distribution, the same mechanism as widening a finite-difference domain at a
+fixed node count. Spacing the edges evenly in `log K` holds every ceiling from
+eight to thirty at rounding.
+
+**The flat-curve model is arbitrageable twice over, and both are measured.**
+Raw, it returns the flat curve's own ratio at the forward rather than the real
+one, pricing a zero-coupon bond 0.88% wrong on an upward-sloping curve — a
+quarter of the adjustment. Scaled onto the curve at the forward, the constant
+payoff is *still* worth 0.217% more than the bond it is, because matching at a
+point does not match an expectation. Dividing by the replicated unit payoff
+enforces the one no-arbitrage condition there is, moves the adjustment by 3.6%,
+and is a no-op wherever the mapping is constant or the volatility is zero, so no
+reduction above is disturbed.
+
+**Paying later unwinds the convexity rather than compounding it**, which came
+out against the guess written down before it was measured. The adjustment runs
+29.28, 26.06, 22.92, 16.83, 5.43, 0.07 and -23.86 basis points as the payment
+moves from the fixing out to ten years past it — monotonically down, and through
+zero. The sign is the sign of `alpha'(F)`, and `alpha'(F)` vanishes where the
+payment date meets the annuity's own annuity-weighted mean payment time: 5.1872
+years, against a slope crossing zero at 62 months, which is 5.1667. Structural,
+not coincidental — the mapping is one discount factor over a weighted sum of
+them, so a payment at the weighted mean makes numerator and denominator respond
+to the rate alike.
+
+**And it is a smile instrument, which is the practical reason the module
+exists.** The adjustment integrates swaption prices across every strike, so it
+reads the whole surface. Against surfaces leaving every at-the-money swaption
+worth exactly what the flat one does, it comes to 100.0%, 96.9%, 94.3%, 92.1%
+and 88.5% of the flat number at skews of 0 to -0.50 per unit of rate — an 8%
+error from a marking choice no at-the-money quote can see. A surface sloping
+*up* has no answer at all: a volatility rising without bound stops the swaption
+price decaying, the integral diverges, and the same fixing reads 35.6 basis
+points at a six standard deviation ceiling and 36565 at fourteen. None of those
+looks wrong, so the measured share of the value beyond the ceiling — 5.5e-24
+flat, exactly 0.0 against a downward skew, 120% there — is reported and the
+replication refused.
+
+One defect of my own, fixed rather than tolerated. A zero-volatility
+replication was being routed through the mapping and a degenerate integration
+range, which left the adjustment at -6.9e-18 instead of zero and could not cover
+an option's kink at all, so a strike away from the forward was refused where its
+intrinsic value was the answer. A known rate makes the payoff a fixed cashflow
+on a known date; it is now answered as one, with no model and no quadrature.
