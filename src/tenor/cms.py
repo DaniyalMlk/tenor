@@ -460,6 +460,10 @@ class Quadrature:
     width: float = 10.0
     panels: int = 64
     nodes: int = 8
+    #: The largest the measured tail may be, relative to the replicated value,
+    #: before the replication is refused rather than returned. See
+    #: :attr:`Replication.truncation`.
+    tolerance: float = 1e-6
 
     def __post_init__(self) -> None:
         if self.width <= 0.0 or not math.isfinite(self.width):
@@ -472,6 +476,10 @@ class Quadrature:
         if self.nodes < 2:
             raise BadConvexity(
                 f"a Gauss rule of {self.nodes!r} nodes cannot integrate a curvature"
+            )
+        if self.tolerance <= 0.0 or not math.isfinite(self.tolerance):
+            raise BadConvexity(
+                f"a truncation tolerance of {self.tolerance!r} can never be met"
             )
 
 
@@ -529,6 +537,26 @@ class Replication:
         quadrature, and it is worth reading before a number is believed.
         """
         return self.measure - 1.0
+
+    @property
+    def truncation(self) -> float:
+        """``|tail| / |value|``: how much of the price is beyond the ceiling.
+
+        A replication converges only if the integrand decays faster than the
+        swaption prices grow, and whether it does is a property of the
+        *surface*, not of this code. An at-the-money or downward-sloping smile
+        gives 1e-24 here. A smile sloping *up* in strike gives a number that
+        grows with the ceiling, because a volatility rising without bound stops
+        the swaption price decaying and the integral has no value to converge
+        to; the adjustment then reads 35.6, 316, 4975, 16567 and 36565 basis
+        points at ceilings of six, eight, ten, twelve and fourteen standard
+        deviations on the ten-year structure in the tests. Every one of those is
+        wrong and none of them looks it, which is why
+        :attr:`Quadrature.tolerance` refuses them instead.
+        """
+        if self.value == 0.0:
+            return abs(self.tail)
+        return abs(self.tail / self.value)
 
 
 def _legendre(degree: int, point: float) -> tuple[float, float]:
@@ -842,7 +870,7 @@ class ConstantMaturity:
             smile, time, replace(quadrature, panels=max(1, quadrature.panels // 4)),
             intrinsic=False,
         )
-        return Replication(
+        replication = Replication(
             value=scale * value,
             raw=value,
             measure=measure,
@@ -856,6 +884,17 @@ class ConstantMaturity:
             panels=quadrature.panels,
             nodes=quadrature.nodes,
         )
+        if replication.truncation > quadrature.tolerance:
+            raise BadConvexity(
+                f"replicating {payoff.name} for {self.name} leaves "
+                f"{replication.truncation:.3%} of the value beyond a ceiling of "
+                f"{upper:.4%}, against a tolerance of {quadrature.tolerance:.1e}. "
+                "The integral has not converged: a volatility that keeps rising "
+                "with the strike stops the swaption price decaying, so the answer "
+                "is whatever ceiling was chosen. Cap the surface's wings, or widen "
+                "the tolerance and read Replication.truncation yourself."
+            )
+        return replication
 
     def _range(
         self,
