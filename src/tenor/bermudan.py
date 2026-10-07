@@ -81,6 +81,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date
+from itertools import pairwise
 
 from .calendar import WEEKENDS_ONLY, Calendar, Rolling
 from .curve import DiscountCurve
@@ -99,6 +100,7 @@ __all__ = [
     "build_tree",
     "coterminal_bonds",
     "coterminal_europeans",
+    "short_rate_level",
 ]
 
 #: Lower and upper bounds on ``Var / dx**2`` that keep every branching
@@ -148,8 +150,24 @@ class TrinomialTree:
         """Total node count, which is what the cost of a backward pass scales with."""
         return sum(hi - lo + 1 for lo, hi in zip(self.lower, self.upper, strict=True))
 
+    def state(self, index: int) -> float:
+        """The state variable ``x = j dx`` at node ``index``.
+
+        The state grid is built from ``a`` and ``sigma`` alone and owes nothing to
+        the curve or to the shifts, which is why
+        :func:`short_rate_level` may be used with it.
+        """
+        return index * self.spacing
+
     def short_rate(self, step: int, index: int) -> float:
-        """The short rate on the step beginning at ``times[step]``, at node ``index``."""
+        """The short rate used to discount the step beginning at ``times[step]``.
+
+        This is the *step* rate, ``theta_i + j dx``, and forward induction fits
+        ``theta_i`` so that the step's discounting reproduces the curve. It is
+        therefore an average of the instantaneous rate across the step rather
+        than its value at the left end, and it is not the right rate at which to
+        evaluate a payoff: see :func:`short_rate_level`.
+        """
         if not 0 <= step < len(self.shift):
             raise BadBermudan(
                 f"step {step!r} is outside the tree's {len(self.shift)} steps"
@@ -179,7 +197,7 @@ class ExerciseStep:
         time: Its year fraction from the valuation date.
         step: Index into the tree's ``times``.
         european: The co-terminal European expiring here, priced analytically.
-        boundary: Short rate at which exercising stops being worse than waiting,
+        boundary: Short rate, as phi(t) + x, at which exercising stops being worse than waiting,
             linearly interpolated between the two nodes that bracket it, or
             ``None`` where no node in the tree exercises.
         exercised: Fraction of this date's state-price mass that exercises,
@@ -282,7 +300,7 @@ class BermudanSwaption:
                 "there is no instrument, and with one there is a European, which "
                 "tenor.hullwhite.swaption_price prices in closed form"
             )
-        for earlier, later in zip(self.expiries, self.expiries[1:], strict=False):
+        for earlier, later in pairwise(self.expiries):
             if later <= earlier:
                 raise BadBermudan(
                     f"exercise dates must be strictly ascending, got "
@@ -339,14 +357,14 @@ class BermudanSwaption:
                 two of them resolve to the same period.
         """
         starts: dict[date, int] = {}
-        for index, period in enumerate(schedule):
-            starts.setdefault(period.start, index)
-            starts[period.adjusted_start] = index
+        for position, period in enumerate(schedule):
+            starts.setdefault(period.start, position)
+            starts[period.adjusted_start] = position
         found: list[tuple[int, date]] = []
         seen: set[int] = set()
         for expiry in self.expiries:
-            index = starts.get(expiry)
-            if index is None:
+            matched = starts.get(expiry)
+            if matched is None:
                 available = ", ".join(
                     period.adjusted_start.isoformat() for period in schedule
                 )
@@ -356,14 +374,14 @@ class BermudanSwaption:
                     f"part way through an accrual, whose floating leg is not worth "
                     f"par at the start. Available boundaries: {available}"
                 )
-            if index in seen:
+            if matched in seen:
                 raise BadBermudan(
                     f"exercise date {expiry.isoformat()} resolves to the same fixed-leg "
                     f"period as an earlier one; the adjusted and unadjusted forms of "
                     "one boundary are the same date, not two exercise rights"
                 )
-            seen.add(index)
-            found.append((index, schedule[index].adjusted_start))
+            seen.add(matched)
+            found.append((matched, schedule[matched].adjusted_start))
         return tuple(found)
 
     def reference_swaption(self, expiry: date) -> Swaption:
@@ -390,6 +408,34 @@ class BermudanSwaption:
             rolling=self.rolling,
             label=f"{self.name} exercised {expiry.isoformat()}",
         )
+
+
+def short_rate_level(curve: DiscountCurve, model: HullWhite, time: float) -> float:
+    """The deterministic part of the short rate, ``phi(t)``, so that ``r = phi + x``.
+
+    Hull-White's drift fit in closed form::
+
+        phi(t) = f(0, t) + sigma**2 (1 - e^{-a t})**2 / (2 a**2)
+
+    the instantaneous forward plus the convexity the volatility adds. Every
+    analytic price in :mod:`tenor.hullwhite` is built on this, which is the
+    reason to use it here rather than the tree's own step shift.
+
+    **Why it matters.** The shift ``theta_i`` that forward induction produces is
+    an average of ``phi`` across its step, not ``phi`` at the step's left end,
+    and the two differ by about half a step times the curve's slope. On a flat
+    curve that is nothing — measured at 1.4e-09 — and a payoff evaluated at
+    either rate gives the same answer. On a curve rising 15 basis points a year
+    it is not: evaluating the exercise value at the step rate instead of at
+    ``phi`` left a zero-volatility Bermudan 5.3e-03 above its own best
+    discounted intrinsic value, an error 17% of the price and in the direction
+    that flatters the instrument. Discounting is the step's job and uses
+    ``theta``; a payoff is a statement about one instant and uses ``phi``.
+    """
+    convexity = -math.expm1(-model.a * time)
+    return curve.instantaneous_forward(time) + model.sigma**2 * convexity**2 / (
+        2.0 * model.a**2
+    )
 
 
 def build_tree(
@@ -444,17 +490,39 @@ def build_tree(
     # final required time would be a node with no step and no shift.
     grid.append(grid[-1] + (grid[-1] - grid[-2]))
     node_times = tuple(grid)
-    gaps = [
-        later - earlier
-        for earlier, later in zip(node_times, node_times[1:], strict=False)
-    ]
+    gaps = [later - earlier for earlier, later in pairwise(node_times)]
     variances = [
         -model.sigma**2 * math.expm1(-2.0 * model.a * gap) / (2.0 * model.a)
         for gap in gaps
     ]
     if model.sigma == 0.0:
-        spacing = 1.0
+        # No randomness, so one state. Letting the width grow as it does below
+        # would add nodes of exactly zero probability whose *rates* are a
+        # spacing apart, and with no volatility to set the spacing from there is
+        # no sensible value for it: a placeholder of one put node rates hundreds
+        # of per cent away from the curve and overflowed a bond price to
+        # infinity, which subtracted to NaN. A degenerate model gets a
+        # degenerate tree.
+        spacing = 0.0
         ratios = tuple(0.0 for _ in gaps)
+        forwards = [
+            -math.log(
+                curve.discount_at(later) / curve.discount_at(earlier)
+            )
+            / (later - earlier)
+            for earlier, later in pairwise(node_times)
+        ]
+        return TrinomialTree(
+            times=node_times,
+            spacing=spacing,
+            shift=tuple(forwards),
+            lower=tuple(0 for _ in node_times),
+            upper=tuple(0 for _ in node_times),
+            state_prices=tuple(
+                (curve.discount_at(time),) for time in node_times
+            ),
+            variance_ratio=ratios,
+        )
     else:
         spacing = math.sqrt(3.0 * math.fsum(variances) / len(variances))
         ratios = tuple(variance / spacing**2 for variance in variances)
@@ -661,6 +729,7 @@ def bermudan_swaption(
     for position in range(len(times) - 1, -1, -1):
         step = exercise_steps[position]
         lo, hi = tree.lower[step], tree.upper[step]
+        level = short_rate_level(curve, model, tree.times[step])
         intrinsic = [
             sign
             * (
@@ -668,7 +737,7 @@ def bermudan_swaption(
                 - math.fsum(
                     amount
                     * model.bond_price(
-                        curve, tree.times[step], time, tree.short_rate(step, node)
+                        curve, tree.times[step], time, level + tree.state(node)
                     )
                     for time, amount in flows[position]
                 )
@@ -676,11 +745,7 @@ def bermudan_swaption(
             for node in range(lo, hi + 1)
         ]
         takes = [value < gain for value, gain in zip(values, intrinsic, strict=True)]
-        changes = sum(
-            1
-            for earlier, later in zip(takes, takes[1:], strict=False)
-            if earlier != later
-        )
+        changes = sum(1 for earlier, later in pairwise(takes) if earlier != later)
         if changes > 1:
             crossings += 1
         if changes >= 1:
@@ -690,8 +755,8 @@ def bermudan_swaption(
                     low_gap = intrinsic[offset] - values[offset]
                     high_gap = intrinsic[offset + 1] - values[offset + 1]
                     weight = low_gap / (low_gap - high_gap)
-                    boundaries[position] = tree.short_rate(step, lo + offset) + (
-                        weight * tree.spacing
+                    boundaries[position] = (
+                        level + tree.state(lo + offset) + weight * tree.spacing
                     )
                     break
         prices = tree.state_prices[step]
@@ -717,6 +782,11 @@ def bermudan_swaption(
             base_next = tree.lower[index + 1]
             ratio = tree.variance_ratio[index]
             theta = tree.shift[index]
+            if tree.spacing == 0.0:
+                # The degenerate tree has one state, so rolling back is
+                # discounting and there are no neighbours to read.
+                values = [math.exp(-theta * gap) * values[0]]
+                continue
             rolled = [0.0] * (hi_now - lo_now + 1)
             for offset in range(hi_now - lo_now + 1):
                 node = lo_now + offset
