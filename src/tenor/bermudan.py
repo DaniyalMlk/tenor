@@ -174,6 +174,39 @@ class TrinomialTree:
             )
         return self.shift[step] + index * self.spacing
 
+    def forward_bond_error(
+        self, curve: DiscountCurve, model: HullWhite, step: int, maturity: float
+    ) -> float:
+        """Relative error in repricing a bond that outlives the node time.
+
+        This is the scheme's dominant approximation, and it is worth being able to
+        see rather than infer. :meth:`curve_error` is exact because forward
+        induction makes it so, but it only checks bonds maturing *on* the grid,
+        whose price at a node is one. Every exercise value instead pays a bond
+        maturing later, read analytically at the node, so what matters is whether
+        the state prices at a node time, weighted by those analytic bond prices,
+        add back to today's discount factor.
+
+        They do not, quite. A step discounts at its left-hand rate, which is a
+        rectangle rule for an integral, and forward induction removes the part of
+        that error which does not depend on the state — leaving a part that does,
+        and so a small tilt in the distribution the state prices represent.
+        Measured on a ten-year bond read at five years: -9.7e-05 at twelve steps a
+        year, halving to -6.1e-06 at a hundred and ninety-two, a ratio of 2.00 at
+        every doubling and the same on a flat curve as on a sloped one. First
+        order in the step, with no curve dependence, and always negative.
+        """
+        level = short_rate_level(curve, model, self.times[step])
+        priced = math.fsum(
+            price * model.bond_price(curve, self.times[step], maturity, level + self.state(index))
+            for index, price in zip(
+                range(self.lower[step], self.upper[step] + 1),
+                self.state_prices[step],
+                strict=True,
+            )
+        )
+        return priced / curve.discount_at(maturity) - 1.0
+
     def curve_error(self, curve: DiscountCurve) -> float:
         """Largest relative error in repricing the curve's own zeros on the grid.
 
@@ -419,18 +452,27 @@ def short_rate_level(curve: DiscountCurve, model: HullWhite, time: float) -> flo
 
     the instantaneous forward plus the convexity the volatility adds. Every
     analytic price in :mod:`tenor.hullwhite` is built on this, which is the
-    reason to use it here rather than the tree's own step shift.
+    reason a payoff here is evaluated at it rather than at the tree's own shift.
 
-    **Why it matters.** The shift ``theta_i`` that forward induction produces is
-    an average of ``phi`` across its step, not ``phi`` at the step's left end,
-    and the two differ by about half a step times the curve's slope. On a flat
-    curve that is nothing — measured at 1.4e-09 — and a payoff evaluated at
-    either rate gives the same answer. On a curve rising 15 basis points a year
-    it is not: evaluating the exercise value at the step rate instead of at
-    ``phi`` left a zero-volatility Bermudan 5.3e-03 above its own best
-    discounted intrinsic value, an error 17% of the price and in the direction
-    that flatters the instrument. Discounting is the step's job and uses
-    ``theta``; a payoff is a statement about one instant and uses ``phi``.
+    **Forward induction recovers the convexity term, which is not obvious and is
+    worth knowing.** A step that discounts at a single rate and reproduces
+    ``P(0, t + dt)`` looks as though that rate must be the step's average
+    instantaneous forward, since that is what reproduces a discount factor with no
+    model in it. The fitted shift is above it, by exactly the second term of
+    ``phi``: measured at 8.9e-04 against an analytic 8.9e-04 for ``a = 0.05,
+    sigma = 0.01`` at five years, agreeing to 1.3e-05 relative at four steps a
+    year and 9.0e-08 at forty-eight, and the same on a flat curve as on a sloped
+    one. The discount-weighted spread of the state across the step *is* the
+    convexity, so fitting a discount factor finds it.
+
+    So the shift and ``phi`` agree to 1.2e-08 at four steps a year, and reading a
+    payoff at either would give nearly the same answer here. ``phi`` is still the
+    right one to use: it is what the analytic formulas are written in, it is a
+    statement about the instant a decision is made rather than about an interval,
+    and it does not depend on the induction continuing to land where it happens
+    to land. The zero-volatility tree is where the two separate in principle — no
+    volatility, no convexity, no spread, and all three quantities coincide — which
+    is also why that case can be checked against arithmetic off the curve alone.
     """
     convexity = -math.expm1(-model.a * time)
     return curve.instantaneous_forward(time) + model.sigma**2 * convexity**2 / (
