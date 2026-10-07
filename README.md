@@ -1492,11 +1492,133 @@ tenor cms ois.txt --reference 2026-01-15 --basis ACT_365F --forecast forward.txt
   --delays 0 6 24 60 120 --skews 0.0 -0.3 0.3
 ```
 
+## Several exercise dates, and no formula for any of them
+
+Every option above has one exercise date, which is exactly what lets
+`tenor.hullwhite` price it twice in closed form: the payoff is a function of the
+short rate at that date, and both routes integrate it against that rate's
+density. A Bermudan swaption breaks the structure rather than complicating it.
+The value of not exercising today is the value of still holding the right
+tomorrow, so the quantity being integrated is the answer to the same problem one
+date later, and there is nothing to write down.
+
+`tenor.bermudan` runs the recursion on a Hull-White trinomial tree built from the
+same `(a, sigma)` the Europeans use, fitted to the curve by forward induction.
+Exercise dates may be given as the unadjusted anniversary or as the business day
+it rolls to.
+
+```python
+from datetime import date
+from tenor import Basis, HullWhite, flat_curve
+from tenor.bermudan import BermudanSwaption, bermudan_swaption
+
+reference = date(2026, 1, 15)
+curve = flat_curve(reference, date(2046, 1, 15), 0.03, basis=Basis.ACT_365F)
+
+option = BermudanSwaption(
+    expiries=tuple(date(year, 1, 15) for year in range(2029, 2036)),
+    maturity=date(2036, 1, 15),
+    strike=0.03,
+)
+value = bermudan_swaption(curve, HullWhite(a=0.05, sigma=0.01), option, reference)
+
+value.price           # 0.041895
+value.best_european   # 0.032385 -- the best single date, priced in closed form
+value.switch_value    # 0.009510 -- 29.4% of it, which is what the dates buy
+```
+
+### The switch value is the number, not the price
+
+A Bermudan is worth at least the best of its co-terminal Europeans, because
+exercising only on that one date is a strategy available to it. So the price on
+its own does not say whether a desk is paying for optionality or for a European
+with extra steps; the excess over that best single date does. Here the seven
+annual dates are worth **29.4%** on top of the best of them.
+
+### Rounding to the nearest node removes the cap on the tree
+
+The textbook Hull-White tree branches up-mid-down from a fixed offset and needs a
+cap on its width, because far from the centre the mean reversion pulls the
+conditional mean past the neighbouring node and a probability turns negative.
+Branching instead to the three nodes around each node's *own* conditional mean
+bounds the residual drift by half a spacing, which keeps every probability
+positive everywhere. Nothing is truncated, so total state-price mass at each step
+is the discount factor to it rather than a share of it, and the width stops
+growing on its own once the drift pulls back a full node.
+
+### Exercise dates land on nodes, which equal steps cannot deliver
+
+An exercise decision is a kink in the value function, and a time step that
+straddles one smears it. Exercise dates are swap anniversaries whose day counts
+differ by a day or three, so a single spacing is shared across steps of slightly
+different length and each gap is split into whole sub-steps. Positivity then needs
+the step variance between a quarter and three quarters of `dx**2` — the uniform
+case sits at a third — and the bound is checked against the grid produced rather
+than assumed from the request.
+
+### Forward induction recovers the convexity term
+
+Fitting one rate per step to reproduce the next zero looks like a statement about
+the step's average instantaneous forward, which is a curve quantity with no model
+in it. The fitted shift sits above that average by exactly the second term of
+`phi(t)`: **8.9e-04** against an analytic 8.9e-04 at `a = 0.05, sigma = 0.01` and
+five years, agreeing to 1.3e-05 relative at four steps a year and 9.0e-08 at
+forty-eight, and identically on a flat, a sloped and a humped curve. The
+discount-weighted spread of the state across a step *is* that convexity, so
+fitting a discount factor finds it.
+
+### What is exact, and what is only first order
+
+Two things are identities and are tested as such. The grid's zeros reprice to
+**2.2e-16**. And a model with no volatility has no decision to make, so the price
+collapses to the best discounted intrinsic value computed off the curve alone — to
+**5.9e-17** across twelve curve, payoff and mesh combinations.
+
+The rest is first order in the step, and it is visible without going through a
+price. State prices at a node, weighted by analytic prices of a bond that
+outlives the grid, fall short of today's discount factor by **9.7e-05** at twelve
+steps a year and halve at every doubling: a ratio of **2.00** each time, the same
+on all three curves, always negative. `forward_bond_error` reports it, which is
+why it is the diagnostic to read when choosing a step density.
+
+### A single mesh does not measure convergence
+
+The exercise boundary does not fall on a node and moves between nodes as the mesh
+changes, so the error against the analytic European oscillates in sign and size.
+At 48 steps a year this instrument came within **1.9e-06** of the analytic price
+while the worst case over neighbouring meshes was **1.8e-05**, and a convergence
+ratio read off that point came out at **-865**. Over bands the worst case runs
+4.8e-05, 1.8e-05 and 6.5e-06 across 24-40, 48-64 and 96-112 steps a year.
+
+### The boundary falls on a flat curve, and need not elsewhere
+
+The exercise boundary — the short rate at which taking the swap stops being worse
+than waiting — runs **3.92%, 3.80%, 3.68%, 3.54%, 3.40%, 3.21%, 2.95%** across the
+seven dates above. A shorter remaining swap gives up less by being taken, so the
+bar falls. That reasoning leaves out where the forwards are going: on a curve
+rising 15 basis points a year the boundary reverses once, from 3.128% to 3.212%,
+and on a humped curve it rises over four consecutive dates. Only the last date is
+reliably the lowest bar.
+
+### Payer-receiver parity is the identity to not reach for
+
+A European payer less a European receiver is the forward swap exactly, since the
+two payoffs are the positive and negative parts of one number. Two Bermudans are
+maxima over different stopping rules, and a difference of maxima is not the
+maximum of a difference: measured at 0.00212 against a swap worth 0.00136. Using
+it as a check would report a 56% pricing error on correct prices.
+
+```bash
+tenor bermudan ois.txt --reference 2026-01-15 --basis ACT_365F \
+  --expiry 2031-01-15 2032-01-15 2033-01-15 2034-01-15 \
+  --swap-maturity 2036-01-15 --mean-reversion 0.05 --volatility 0.01
+```
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 1363 tests
+pytest          # 1475 tests
 mypy --strict
 ruff check .
 ```

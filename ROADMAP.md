@@ -776,3 +776,123 @@ range, which left the adjustment at -6.9e-18 instead of zero and could not cover
 an option's kink at all, so a strike away from the forward was refused where its
 intrinsic value was the answer. A known rate makes the payoff a fixed cashflow
 on a known date; it is now answered as one, with no model and no quadrature.
+
+## Phase 18 — Several exercise dates, and no formula for any of them
+
+- [x] A trinomial tree on the Hull-White state variable, with the exact
+      conditional moments of the step rather than their Euler approximations
+- [x] Branching to the nodes around each node's own conditional mean, so every
+      probability is positive without a cap on the tree width
+- [x] Shifts by forward induction on Arrow-Debreu prices, so the grid's zeros are
+      repriced rather than approximated
+- [x] One state spacing across steps of differing length, so every exercise date
+      lands exactly on a node
+- [x] Backward induction with an exercise decision, the exercise value read
+      analytically at the node
+- [x] The co-terminal Europeans, the best of them, and the switch value over it
+- [x] The exercise boundary and the share of mass that takes it, at each date
+- [x] The error a bond outliving the grid reprices to, reported rather than
+      inferred from a price
+- [x] A command-line entry point that leads with the switch value and keeps the
+      exact diagnostic apart from the approximate one
+
+Every option before this one has a single exercise date, which is what makes
+`tenor.hullwhite` able to price it twice in closed form: the payoff is a function
+of the short rate at that date, and both routes integrate it against that rate's
+density. A Bermudan breaks the structure rather than complicating it. The value
+of not exercising today is the value of still holding the right tomorrow, so the
+quantity being integrated is the answer to the same problem one date later and
+there is nothing to write down.
+
+`tenor.lattice` was not the answer, and not for reasons of convenience. Its tree
+carries a volatility of its own, expresses early exercise as a schedule of call
+prices held by an issuer, and has no relationship to the `(a, sigma)` fitted to a
+swaption market. Pricing a Bermudan swaption there would mean holding two
+unrelated models of one short rate and hoping they agreed.
+
+**Rounding to the nearest node is the whole construction.** The textbook
+Hull-White tree branches up-mid-down from a fixed offset and needs a cap on its
+width, because far from the centre the mean reversion pulls the conditional mean
+past the neighbouring node and a probability goes negative. Branching instead to
+the three nodes around each node's *own* conditional mean bounds the residual
+drift by half a spacing, which makes `pm = 1 - v - u**2` and
+`pd = (v + u**2 - u) / 2` positive everywhere for `v` near a third. Nothing is
+truncated, so total state-price mass at each step is the discount factor to it
+rather than a share of it, and the width stops growing on its own: once `j a dt`
+exceeds half a spacing the centre comes back a node and the top stays put.
+
+**Exercise dates land on nodes, which equal time steps cannot deliver.** An
+exercise decision is a kink in the value function and a step that straddles one
+smears it. The dates are swap anniversaries whose day counts differ by a day or
+three, so the grid is built interval by interval with a single spacing shared
+across steps of slightly different length. Positivity then needs the step
+variance between a quarter and three quarters of `dx**2`, which the uniform case
+satisfies at a third with room on both sides, and the bound is checked against
+the grid produced rather than assumed from the request.
+
+**Forward induction recovers the convexity term, which was not expected.**
+Fitting one rate per step to reproduce the next zero looks like a statement about
+the step's average instantaneous forward — a curve quantity with no model in it.
+The fitted shift sits above that average by exactly the second term of `phi(t)`:
+8.9e-04 against an analytic 8.9e-04 at `a = 0.05, sigma = 0.01` and five years,
+agreeing to 1.3e-05 relative at four steps a year and 9.0e-08 at forty-eight, and
+identically on flat, sloped and humped curves. The discount-weighted spread of
+the state across a step *is* that convexity, so fitting a discount factor finds
+it. Exercise values are still read at the analytic `phi`, because that is what
+the closed forms are written in and because a decision is about an instant rather
+than an interval.
+
+**Two identities hold exactly and are asserted as such.** The grid's zeros
+reprice to 2.2e-16, which is the induction's own construction. And a model with
+no volatility has no decision to make, so the price collapses to the best
+discounted intrinsic value computed off the curve alone — to **5.9e-17** across
+twelve curve, payoff and mesh combinations, with no tree quantity in the
+benchmark.
+
+That second one was reached through a defect worth recording. A zero-volatility
+tree was still being widened, which added nodes of exactly zero probability whose
+*rates* were a placeholder spacing apart; a bond price at one of them overflowed
+to infinity and the leg subtraction returned **NaN** — a number-shaped
+non-number, which is the worst available outcome. A degenerate model now gets a
+degenerate tree.
+
+**Convergence is a band, not a point, and the reason is where the kink sits.**
+The exercise boundary does not fall on a node, and it moves between nodes as the
+mesh changes, so the error against the analytic European oscillates in sign and
+size. At 48 steps a year this instrument came within **1.9e-06** of the analytic
+price while the worst case over its neighbouring meshes was **1.8e-05**, and a
+convergence ratio read off that point came out at **-865**. Measured on bands
+instead, the worst case runs 4.8e-05, 1.8e-05 and 6.5e-06 across 24-40, 48-64 and
+96-112 steps a year: about 2.7 per doubling.
+
+The underlying rate is first order, and it is visible without going through a
+price at all. The state prices at a node, weighted by analytic prices of a bond
+that outlives the grid, fall short of today's discount factor by **9.7e-05** at
+twelve steps a year and halve at every doubling — a ratio of **2.00** each time,
+the same on all three curves, and always negative. That is the rectangle rule the
+discounting uses, and forward induction removes only the part of it that does not
+depend on the state.
+
+**Two test claims were wrong and were corrected rather than loosened.** A deep
+in-the-money payer was asserted to be worth exactly the forward swap it would be
+exercised into, since a payoff positive everywhere has nothing left to wait for.
+A positive payoff loses its kink, not its choice: the price is above that swap by
+**1.33e-03** on 0.202, stable to three figures from 24 to 96 steps a year, and 7
+to 9 per cent of the state-price mass waits. The co-terminal swap shortens with
+every date, so date one dominates *in expectation*; per path it does not, and
+where rates have fallen the right is worth more than the swap.
+
+And the exercise boundary was asserted to fall over time, on the reasoning that a
+shorter remaining swap gives up less by being taken. True, and incomplete. Flat,
+it falls from 3.92% to 2.95% over seven annual dates. On a curve rising 15 basis
+points a year it reverses once, from 3.128% to 3.212%, because the swap starting
+a year later pays against higher forwards; on a humped curve it rises over four
+consecutive dates. Only the last date is reliably the lowest bar. The assertion
+would have passed on the one curve it was tried on.
+
+**Payer-receiver parity is the identity to *not* reach for here.** A European
+payer less a European receiver is the forward swap exactly, because the two
+payoffs are the positive and negative parts of one number. Two Bermudans are
+maxima over different stopping rules, and a difference of maxima is not the
+maximum of a difference: measured at 0.00212 against a swap worth 0.00136, so
+treating it as a check would report a 56% pricing error on correct prices.
