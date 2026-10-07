@@ -571,25 +571,65 @@ def test_payer_receiver_parity_holds_for_the_europeans_and_fails_for_the_bermuda
 # -- the exercise boundary -----------------------------------------------------
 
 
+@pytest.mark.parametrize("name", sorted(CURVES))
 @pytest.mark.parametrize("a,sigma", [(0.02, 0.005), (0.05, 0.01), (0.15, 0.02), (0.4, 0.012)])
-def test_the_exercise_decision_has_one_boundary_and_it_falls(a: float, sigma: float) -> None:
-    """Measured, not assumed, and over a spread of parameters.
+def test_one_boundary_describes_the_decision_at_every_date(
+    name: str, a: float, sigma: float
+) -> None:
+    """A single sign change across the nodes, which is what makes a boundary a boundary.
 
-    A single sign change across the nodes means one rate describes the decision
-    at that date. That it falls over time is the economics: with less swap left,
-    the continuation value is smaller and less is given up by exercising, so a
-    payer exercises for less. Measured at 3.92% down to 2.95% over seven annual
-    dates at ``a = 0.05``.
+    Reported rather than assumed — ``crossings`` counts the dates where the
+    exercise-versus-wait decision changes sign more than once, and a non-zero
+    count would mean no single rate describes that date's decision. Zero on all
+    three curves across four parameter pairs.
     """
     value = bermudan_swaption(
-        flat(), HullWhite(a=a, sigma=sigma), payer(), REFERENCE, steps_per_year=24
+        CURVES[name](), HullWhite(a=a, sigma=sigma), payer(), REFERENCE, steps_per_year=24
     )
     assert value.crossings == 0
-    boundaries = [step.boundary for step in value.steps]
-    assert all(bound is not None for bound in boundaries)
-    for earlier, later in pairwise(boundaries):
+    assert all(step.boundary is not None for step in value.steps)
+
+
+def test_the_boundary_falls_on_a_flat_curve_and_need_not_elsewhere() -> None:
+    """The monotonicity worth having is the one that was measured, not the one expected.
+
+    Flat, the boundary falls at every date — 3.92% to 2.95% over seven annual
+    dates — and the reason is clean: a shorter remaining swap means a smaller
+    continuation value, so less is given up by taking it and a payer exercises for
+    less.
+
+    That reasoning is incomplete, and the curve supplies the missing half. The
+    boundary also depends on where the forwards are going, and on a curve rising
+    15 basis points a year it reverses once, from 3.128% to 3.212%: the swap
+    starting a year later is worth more because the forwards it pays against are
+    higher, which raises the bar for taking the earlier date. On the humped curve
+    it rises over four consecutive dates. Asserting a falling boundary in general
+    would have passed on the only curve it was tried on.
+    """
+    model = HullWhite(a=0.05, sigma=0.01)
+    on_flat = [
+        step.boundary
+        for step in bermudan_swaption(
+            flat(), model, payer(), REFERENCE, steps_per_year=24
+        ).steps
+    ]
+    for earlier, later in pairwise(on_flat):
         assert earlier is not None and later is not None
         assert later < earlier
+    for name in ("sloped", "humped"):
+        boundaries = [
+            step.boundary
+            for step in bermudan_swaption(
+                CURVES[name](), model, payer(), REFERENCE, steps_per_year=24
+            ).steps
+        ]
+        assert any(
+            later > earlier
+            for earlier, later in pairwise(boundaries)
+            if earlier is not None and later is not None
+        ), f"the {name} curve was expected to break monotonicity"
+        # the last date is still the lowest bar: nothing is left to wait for
+        assert boundaries[-1] == min(bound for bound in boundaries if bound is not None)
 
 
 def test_the_boundary_separates_exercising_from_waiting() -> None:
@@ -609,7 +649,7 @@ def test_the_boundary_separates_exercising_from_waiting() -> None:
     # at the boundary the swap is in the money, since waiting is worth something
     level = short_rate_level(curve, model, first.time)
     assert first.boundary > level
-    # and every later date exercises at a lower rate, so more of its mass does
+    # the last date has the lowest bar, so more of its mass exercises
     assert value.steps[-1].exercised > first.exercised
 
 

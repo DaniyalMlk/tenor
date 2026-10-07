@@ -40,6 +40,7 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .bermudan import BermudanSwaption, bermudan_swaption, coterminal_europeans
 from .bond import Accrual, Bond
 from .bootstrap import Bootstrapped, bootstrap
 from .calendar import WEEKENDS_ONLY
@@ -79,6 +80,7 @@ from .horizon import horizon_return
 from .hullwhite import (
     Calibration,
     HullWhite,
+    Method,
     Quote,
     calibrate,
     forward_measure,
@@ -1571,6 +1573,111 @@ def _credit_quotes(text: str) -> list[tuple[date, float]]:
     return quotes
 
 
+def run_bermudan(arguments: argparse.Namespace) -> dict[str, object]:
+    """A Bermudan swaption, the Europeans inside it, and what the extra dates buy.
+
+    The price on its own says very little. A Bermudan is worth at least the best
+    of its co-terminal Europeans, because exercising only on that one date is a
+    strategy available to it, so the number that says whether a desk is paying
+    for optionality is the *switch value* — the excess over that best single
+    date. It is reported both absolutely and as a share.
+
+    Two diagnostics say whether the lattice is sound. The curve error is an
+    identity of the forward induction and has to be zero to floating point. The
+    forward bond error is the scheme's real approximation: it is first order in
+    the step and always negative, so it is the number to watch when deciding
+    whether ``--steps-per-year`` is high enough.
+
+    The boundary column is the short rate at which exercising stops being worse
+    than waiting, and it falls across the dates because a shorter remaining swap
+    gives up less by being taken.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    curve = discounting.curve
+    expiries = tuple(date.fromisoformat(one) for one in arguments.expiry)
+    maturity = date.fromisoformat(arguments.swap_maturity)
+    payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
+    frequency = Frequency[arguments.fixed_frequency.upper()]
+    fixed_basis = _basis(arguments.fixed_basis)
+    time_basis = _basis(arguments.time_basis)
+    model = HullWhite(a=arguments.mean_reversion, sigma=arguments.volatility)
+
+    probe = BermudanSwaption(
+        expiries=expiries,
+        maturity=maturity,
+        strike=0.03,
+        payoff=payoff,
+        frequency=frequency,
+        basis=fixed_basis,
+    )
+    schedule = probe.schedule()
+    annuity = sum(
+        year_fraction(period.start, period.end, fixed_basis)
+        * curve.discount(period.payment)
+        for period in schedule
+    )
+    forward = (
+        curve.discount(schedule[0].adjusted_start) - curve.discount(schedule[-1].payment)
+    ) / annuity
+    strike = arguments.strike if arguments.strike is not None else forward
+    option = BermudanSwaption(
+        expiries=expiries,
+        maturity=maturity,
+        strike=strike,
+        payoff=payoff,
+        frequency=frequency,
+        basis=fixed_basis,
+    )
+    value = bermudan_swaption(
+        curve,
+        model,
+        option,
+        reference,
+        basis=time_basis,
+        steps_per_year=arguments.steps_per_year,
+    )
+    last = value.steps[-1]
+    payload: dict[str, object] = {
+        "instrument": option.name,
+        "strike": strike,
+        "forward_swap_rate": forward,
+        "price": value.price,
+        "best_european": value.best_european,
+        "switch_value": value.switch_value,
+        "switch_share_of_best": value.switch_value / value.best_european
+        if value.best_european
+        else None,
+        "model": {"mean_reversion": model.a, "volatility": model.sigma},
+        "lattice": {
+            "steps": value.tree.steps,
+            "nodes": value.tree.nodes,
+            "spacing": value.tree.spacing,
+            "curve_error": value.tree.curve_error(curve),
+            "forward_bond_error": value.tree.forward_bond_error(
+                curve, model, last.step, last.time + 1.0
+            ),
+            "single_boundary_everywhere": value.crossings == 0,
+        },
+        "dates": [
+            {
+                "expiry": step.expiry,
+                "european": step.european,
+                "boundary": step.boundary,
+                "exercised": step.exercised,
+            }
+            for step in value.steps
+        ],
+    }
+    if arguments.quadrature:
+        payload["europeans_by_quadrature"] = list(
+            coterminal_europeans(
+                curve, model, option, reference, time_basis, Method.QUADRATURE
+            )
+        )
+    return payload
+
+
 def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
     """Strip a survival curve from par spreads and say what it implies.
 
@@ -2616,6 +2723,89 @@ def parser() -> argparse.ArgumentParser:
         help="also report the annuity-measure volatilities the price implies",
     )
     hullwhite.set_defaults(run=run_hullwhite)
+
+    bermudan = subcommands.add_parser(
+        "bermudan",
+        help="price a Bermudan swaption and the Europeans inside it",
+        description=(
+            "Prices a co-terminal Bermudan swaption by backward induction on a "
+            "Hull-White trinomial tree fitted to the curve, and reports the "
+            "switch value over the best of its co-terminal Europeans, which is "
+            "what the extra exercise dates are actually worth. Exercise dates "
+            "may be given as the unadjusted anniversary or as the business day "
+            "it rolls to. The curve error is an identity and must be zero; the "
+            "forward bond error is the scheme's real approximation and is first "
+            "order in the step count."
+        ),
+    )
+    shared(bermudan)
+    bermudan.add_argument(
+        "--expiry",
+        required=True,
+        nargs="+",
+        metavar="DATE",
+        help="the exercise dates, ISO, ascending",
+    )
+    bermudan.add_argument(
+        "--swap-maturity",
+        dest="swap_maturity",
+        required=True,
+        help="the common end of the underlying swap, ISO",
+    )
+    bermudan.add_argument(
+        "--strike",
+        type=float,
+        default=None,
+        help="the fixed rate as a decimal; defaults to the forward swap rate",
+    )
+    bermudan.add_argument(
+        "--receiver", action="store_true", help="receive fixed; the default pays it"
+    )
+    bermudan.add_argument(
+        "--mean-reversion",
+        dest="mean_reversion",
+        type=float,
+        required=True,
+        help="the model's a, in reciprocal years",
+    )
+    bermudan.add_argument(
+        "--volatility",
+        type=float,
+        required=True,
+        help="the model's sigma, in absolute rate units per root year",
+    )
+    bermudan.add_argument(
+        "--steps-per-year",
+        dest="steps_per_year",
+        type=int,
+        default=48,
+        help="step density between exercise dates, which always land on nodes",
+    )
+    bermudan.add_argument(
+        "--fixed-frequency",
+        dest="fixed_frequency",
+        default=Frequency.SEMI_ANNUAL.name,
+        choices=[one.name for one in Frequency],
+    )
+    bermudan.add_argument(
+        "--fixed-basis",
+        dest="fixed_basis",
+        default=Basis.THIRTY_360_BOND.name,
+        choices=[one.name for one in Basis],
+    )
+    bermudan.add_argument(
+        "--time-basis",
+        dest="time_basis",
+        default=Basis.ACT_365F.name,
+        choices=[one.name for one in Basis],
+        help="day count the model measures its own year fractions in",
+    )
+    bermudan.add_argument(
+        "--quadrature",
+        action="store_true",
+        help="also price the Europeans by the integral instead of the decomposition",
+    )
+    bermudan.set_defaults(run=run_bermudan)
 
     return root
 
