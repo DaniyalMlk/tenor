@@ -1760,3 +1760,102 @@ def test_g2_rejects_a_cap_that_ends_before_it_starts(
     arguments = g2_arguments(long_curves)
     arguments[arguments.index("--end") + 1] = "2026-06-15"
     assert main(arguments) == 2
+
+
+def bermudan_arguments(curves: tuple[str, str]) -> list[str]:
+    ois, _ = curves
+    return [
+        "bermudan",
+        ois,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--expiry",
+        "2031-01-15",
+        "2032-01-15",
+        "2033-01-15",
+        "2034-01-15",
+        "--swap-maturity",
+        "2036-01-15",
+        "--mean-reversion",
+        "0.05",
+        "--volatility",
+        "0.01",
+        "--steps-per-year",
+        "16",
+    ]
+
+
+def test_bermudan_reports_the_switch_value_over_its_best_european(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The price alone does not say whether the extra dates are worth anything."""
+    assert main(["--json", *bermudan_arguments(long_curves)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["price"] > payload["best_european"] > 0.0
+    assert payload["switch_value"] == pytest.approx(
+        payload["price"] - payload["best_european"], rel=1e-12
+    )
+    assert 0.0 < payload["switch_share_of_best"] < 1.0
+    assert payload["strike"] == pytest.approx(payload["forward_swap_rate"])
+    assert payload["best_european"] == max(one["european"] for one in payload["dates"])
+    assert len(payload["dates"]) == 4
+    # the unadjusted anniversary comes back as the business day it rolls to
+    assert payload["dates"][2]["expiry"] == "2033-01-17"
+
+
+def test_bermudan_reports_the_identity_and_the_approximation_apart(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One of the two lattice diagnostics is exact and the other is not, by design."""
+    assert main(["--json", *bermudan_arguments(long_curves)]) == 0
+    lattice = json.loads(capsys.readouterr().out)["lattice"]
+
+    assert abs(lattice["curve_error"]) < 1e-14
+    assert -1e-3 < lattice["forward_bond_error"] < 0.0
+    assert lattice["single_boundary_everywhere"] is True
+    assert lattice["nodes"] > lattice["steps"] > 16
+
+
+def test_bermudan_prices_the_europeans_both_ways_on_request(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [*bermudan_arguments(long_curves), "--quadrature"]
+    assert main(["--json", *arguments]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    decomposed = [one["european"] for one in payload["dates"]]
+    for one, other in zip(
+        decomposed, payload["europeans_by_quadrature"], strict=True
+    ):
+        assert one == pytest.approx(other, rel=1e-10)
+
+
+def test_bermudan_renders_as_text_as_well_as_json(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(bermudan_arguments(long_curves)) == 0
+    out = capsys.readouterr().out
+    assert "switch_value" in out
+    assert "boundary=" in out
+
+
+def test_bermudan_receiver_is_a_different_instrument(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *bermudan_arguments(long_curves)]) == 0
+    as_payer = json.loads(capsys.readouterr().out)["price"]
+    assert main(["--json", *bermudan_arguments(long_curves), "--receiver"]) == 0
+    as_receiver = json.loads(capsys.readouterr().out)["price"]
+    assert as_payer != as_receiver
+    assert as_receiver > 0.0
+
+
+def test_bermudan_refuses_a_date_off_a_fixed_leg_boundary(
+    long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = bermudan_arguments(long_curves)
+    arguments[arguments.index("2032-01-15")] = "2032-03-15"
+    assert main(arguments) == 2
+    assert "not a fixed-leg period boundary" in capsys.readouterr().err
