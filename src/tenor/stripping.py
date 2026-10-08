@@ -76,17 +76,41 @@ at five:
   rather than the expectation.
 * **The quotes can fall, but not freely.** Holding the one-year quote at 18%
   and walking the two-year quote down, the strip survives to **5.9832%** and has
-  no answer below it: the two-year cap is then worth exactly what its first
-  three periods are already worth plus the intrinsic value of the four new ones,
-  so their volatility is zero and there is nothing left to take away. A fall of
-  1202 basis points over one year is admissible and 1203 is not. That boundary
-  is reached exactly rather than approached, which is why it is returned as a
-  zero rather than searched for -- a root solve sees no sign change there.
+  no answer below it: the two-year cap is then worth less than its first three
+  periods plus the intrinsic value of the four new ones, so no non-negative
+  volatility on those four closes the gap. A fall of 1202 basis points over one
+  year is admissible and 1203 is not.
+* **Monotone is not the same as steep, and that is the trap at both ends.** The
+  premium rises with the volatility everywhere, so a bracket on
+  ``[0, ceiling]`` always works and a solver always returns something. Deep in
+  the money it returns nonsense: the option is worth its intrinsic value to
+  machine precision and every volatility explains the quote equally well. So
+  each bucket carries the width of the set of volatilities that reprice its cap
+  to within the tolerance, and a bucket wider than
+  :data:`INDETERMINACY_LIMIT` is refused as unidentified rather than reported.
+
+  Measured at an 18% quote against forwards of 3.23% to 3.39%, the answer is
+  pinned to 1.2e-13 at a strike of 3.5%, 6.2e-13 at 3%, 1.2e-11 at 2.5%,
+  1.3e-09 at 2% and 6.2e-06 at 1.5%; the lowest strike the quote says anything
+  about at all is **1.3901%**, about eleven standard deviations in the money,
+  where the premium and the intrinsic value are the same double. The same guard
+  is what stops the falling quote above: at the last quote the strip accepts,
+  the indeterminacy has reached 9.9989e-05 against the 1.0e-04 limit, and one
+  step below the premium is unattainable as well. The two are the same
+  statement measured two ways.
+
+  A zero quote is identified only *exactly* at the money, which is the last
+  consequence of this and the least obvious. Vega vanishes with the volatility
+  away from the strike -- both ``d1`` and ``d2`` run off to infinity and take
+  the density with them -- so an interval of volatilities all produce the
+  intrinsic value. At the money the premium is linear in the volatility with a
+  slope near ``0.4 F sqrt(T)``, and zero is pinned to 2.8e-16.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
@@ -97,6 +121,7 @@ from .options import Cap, Convention, Payoff, bachelier, black
 from .solve import brent
 
 __all__ = [
+    "INDETERMINACY_LIMIT",
     "PREMIUM_TOLERANCE",
     "VOLATILITY_CEILING",
     "CapQuote",
@@ -120,6 +145,13 @@ PREMIUM_TOLERANCE = 1.0e-12
 #: hundred per cent is far outside any quoted market and inside the range where
 #: the lognormal option value is still numerically well behaved.
 VOLATILITY_CEILING = 5.0
+
+#: How wide the set of volatilities repricing a quote within
+#: :data:`PREMIUM_TOLERANCE` may be before the bucket is refused as
+#: unidentified. One basis point of volatility is finer than anything is
+#: quoted to, so a solution that cannot be pinned down to that is not a
+#: measurement whatever single number the solver returns.
+INDETERMINACY_LIMIT = 1.0e-4
 
 
 class StrippingError(ValueError):
@@ -168,6 +200,11 @@ class CapletBucket:
             step. One means a basis point on the quote is a basis point on the
             bucket; the figure grows with maturity as the bucket becomes a
             smaller share of the premium.
+        indeterminacy: Width of the set of volatilities that reprice this cap
+            to within :data:`PREMIUM_TOLERANCE`. The conditioning at the other
+            end from :attr:`sensitivity`: that one says how much a quoting
+            error moves the answer, this one says how sharp the answer is at a
+            perfect quote. Refused above :data:`INDETERMINACY_LIMIT`.
     """
 
     maturity: date
@@ -177,6 +214,7 @@ class CapletBucket:
     volatility: float
     quoted: float
     sensitivity: float
+    indeterminacy: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -298,6 +336,38 @@ def _value_on(
     )
 
 
+def _indeterminacy(residual: Callable[[float], float], level: float, tolerance: float) -> float:
+    """Half-width of the set of volatilities repricing to within ``tolerance``.
+
+    Monotonicity makes this two bisections rather than a search: the set is an
+    interval, so its ends are where the residual's size crosses the tolerance.
+    Reported because a premium can be monotone in the volatility and still
+    flat in it -- deep in the money an option is worth its intrinsic value to
+    machine precision, and every volatility explains the quote equally well.
+    """
+    width = 0.0
+    for direction in (1.0, -1.0):
+        # Downwards the probe cannot pass zero, so the reach in that direction
+        # is the level itself. Clamping the probe instead of the reach makes
+        # every step beyond the floor land on the floor, which reads as the
+        # whole bracket fitting inside the tolerance.
+        reach = VOLATILITY_CEILING if direction > 0.0 else level
+        if reach <= 0.0:
+            continue
+        low, high = 0.0, reach
+        if abs(residual(level + direction * reach)) <= tolerance:
+            width = max(width, reach)
+            continue
+        for _ in range(60):
+            middle = 0.5 * (low + high)
+            if abs(residual(level + direction * middle)) <= tolerance:
+                low = middle
+            else:
+                high = middle
+        width = max(width, low)
+    return width
+
+
 def strip_caplets(
     quotes: list[CapQuote] | tuple[CapQuote, ...],
     effective: date,
@@ -367,12 +437,15 @@ def strip_caplets(
 
     buckets: list[CapletBucket] = []
 
-    def step(periods: tuple[_Period, ...], covered: int, flat: float) -> float:
-        """The volatility for periods ``covered:`` that reprices this quote.
+    def step(periods: tuple[_Period, ...], covered: int, flat: float) -> tuple[float, float]:
+        """The volatility for periods ``covered:``, and how sharply it is pinned.
 
-        Monotone in the volatility, so a bracket on ``[0, ceiling]`` is all the
-        solver needs and the ends of that bracket are also the test for whether
-        the quote is attainable at all.
+        The premium is monotone in the volatility, so a bracket on
+        ``[0, ceiling]`` is all the solver needs and the ends of that bracket
+        are also the test for whether the quote is attainable at all. Monotone
+        is not the same as steep: deep in the money the premium is flat in the
+        volatility over a wide range, which is what the second return value
+        measures.
         """
         target = _value(periods, strike, flat, payoff, convention)
         settled = _value_on(
@@ -396,18 +469,18 @@ def strip_caplets(
                 "unattainable given the shorter quotes already fitted, not "
                 "merely hard to solve."
             )
-        if incremental <= floor:
-            # The feasibility boundary itself, and it is reached exactly rather
-            # than approached: the new periods are worth their intrinsic value
-            # and the quote has nothing left to pay for optionality. Brent
-            # would see no sign change here, so the boundary is returned
-            # instead of searched for.
-            return 0.0
 
         def residual(level: float) -> float:
             return _value(fresh, strike, level, payoff, convention) - incremental
 
-        return brent(residual, 0.0, VOLATILITY_CEILING, tolerance=1e-15).value
+        if incremental - floor <= tolerance:
+            # Zero already reprices to within the tolerance, so it is the
+            # answer -- and Brent would see no sign change across its bracket
+            # and report no root instead of the boundary it is standing on.
+            level = 0.0
+        else:
+            level = brent(residual, 0.0, VOLATILITY_CEILING, tolerance=1e-15).value
+        return level, _indeterminacy(residual, level, tolerance)
 
     covered = 0
     for position, (quote, periods) in enumerate(zip(ordered, schedules, strict=True)):
@@ -417,9 +490,20 @@ def strip_caplets(
                 f"{ordered[position - 1].maturity.isoformat()} did not already "
                 "cover, so its quote has nothing of its own to determine"
             )
-        level = step(periods, covered, quote.volatility)
+        level, indeterminacy = step(periods, covered, quote.volatility)
+        if indeterminacy > INDETERMINACY_LIMIT:
+            raise StrippingError(
+                f"the cap to {quote.maturity.isoformat()} does not identify a "
+                f"volatility for its {len(periods) - covered} new periods: every "
+                f"level from {max(level - indeterminacy, 0.0):.6g} to "
+                f"{level + indeterminacy:.6g} reprices it to within the premium "
+                f"tolerance. At a strike of {strike:g} against these forwards the "
+                "periods are far enough in the money that their premium is their "
+                "intrinsic value, and a quote carries no information about the "
+                "volatility. The answer is unidentified, not zero."
+            )
         bump = 1e-6
-        bumped = step(periods, covered, quote.volatility + bump)
+        bumped, _ = step(periods, covered, quote.volatility + bump)
         buckets.append(
             CapletBucket(
                 maturity=quote.maturity,
@@ -429,6 +513,7 @@ def strip_caplets(
                 volatility=level,
                 quoted=quote.volatility,
                 sensitivity=(bumped - level) / bump,
+                indeterminacy=indeterminacy,
             )
         )
         covered = len(periods)
