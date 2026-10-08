@@ -232,6 +232,17 @@ from .spread import (
     par_rate_at,
     z_spread,
 )
+from .stripping import (
+    INDETERMINACY_LIMIT,
+    PREMIUM_TOLERANCE,
+    VOLATILITY_CEILING,
+    CapletBucket,
+    CapletVolatility,
+    CapQuote,
+    StrippingError,
+    flat_volatility,
+    strip_caplets,
+)
 
 __version__ = "0.1.0"
 
@@ -240,7 +251,10 @@ __all__ = [
     "DEFAULT_LAG_MONTHS",
     "DEFAULT_NOTIONAL_COUPON",
     "G2",
+    "INDETERMINACY_LIMIT",
+    "PREMIUM_TOLERANCE",
     "STANDARD",
+    "VOLATILITY_CEILING",
     "WEEKENDS_ONLY",
     "Accrual",
     "AnnuityMap",
@@ -275,7 +289,10 @@ __all__ = [
     "Calendar",
     "Calibration",
     "Cap",
+    "CapQuote",
     "Caplet",
+    "CapletBucket",
+    "CapletVolatility",
     "Cashflow",
     "CheapestToDeliver",
     "Compounding",
@@ -343,6 +360,7 @@ __all__ = [
     "SplitRisk",
     "SpreadLegOf",
     "Strike",
+    "StrippingError",
     "Stub",
     "SurvivalCurve",
     "Swap",
@@ -387,6 +405,7 @@ __all__ = [
     "fit_fast_volatility",
     "flat_curve",
     "flat_smile",
+    "flat_volatility",
     "forecast_key_rates",
     "forward_curve",
     "forward_measure",
@@ -432,6 +451,7 @@ __all__ = [
     "split_risk",
     "start_of",
     "steps_between",
+    "strip_caplets",
     "swaption_price",
     "tent_weights",
     "total_instrument_risk",

@@ -112,6 +112,7 @@ from .multicurve import (
     IndexForward,
     bootstrap_forecast,
     projected_forward,
+    shifted_forecast,
     split_risk,
 )
 from .options import (
@@ -126,6 +127,7 @@ from .risk import buckets_from, instrument_risk, key_rates, level, shape_duratio
 from .schedule import Frequency, add_months, generate
 from .solve import NoRoot
 from .spread import i_spread, z_spread
+from .stripping import CapQuote, flat_volatility, strip_caplets
 
 
 class BadInput(ValueError):
@@ -148,8 +150,7 @@ def _basis(text: str) -> Basis:
         return Basis(text)
     except ValueError:
         raise BadInput(
-            f"{text!r} is not a day count. Use one of: "
-            + ", ".join(one.name for one in Basis)
+            f"{text!r} is not a day count. Use one of: " + ", ".join(one.name for one in Basis)
         ) from None
 
 
@@ -188,9 +189,7 @@ def parse_quotes(text: str, reference: date) -> list[Instrument]:
 def _one(kind: str, fields: Sequence[str], reference: date) -> Instrument:
     if kind == "deposit":
         maturity, rate, basis = fields[0], fields[1], fields[2]
-        return Deposit(
-            reference, date.fromisoformat(maturity), float(rate), _basis(basis)
-        )
+        return Deposit(reference, date.fromisoformat(maturity), float(rate), _basis(basis))
     if kind == "future":
         start, end, price, basis = fields[0], fields[1], fields[2], fields[3]
         convexity = float(fields[4]) if len(fields) > 4 else 0.0
@@ -212,9 +211,7 @@ def _one(kind: str, fields: Sequence[str], reference: date) -> Instrument:
             frequency,
             basis,
         )
-    raise BadInput(
-        f"{kind!r} is not an instrument. Known kinds are deposit, future and swap."
-    )
+    raise BadInput(f"{kind!r} is not an instrument. Known kinds are deposit, future and swap.")
 
 
 def build(arguments: argparse.Namespace) -> Bootstrapped:
@@ -250,9 +247,7 @@ def parse_index(text: str) -> ReferenceIndex:
         month, level = fields
         parts = month.split("-")
         if len(parts) != 2:
-            raise ValueError(
-                f"line {number}: {month!r} is not a month; write it as 2025-08"
-            )
+            raise ValueError(f"line {number}: {month!r} is not a month; write it as 2025-08")
         try:
             year, month_number = int(parts[0]), int(parts[1])
         except ValueError:
@@ -260,19 +255,13 @@ def parse_index(text: str) -> ReferenceIndex:
                 f"line {number}: {month!r} is not a month; write it as 2025-08"
             ) from None
         if not 1 <= month_number <= 12:
-            raise ValueError(
-                f"line {number}: there is no month {month_number}"
-            )
+            raise ValueError(f"line {number}: there is no month {month_number}")
         try:
             value = float(level)
         except ValueError:
-            raise ValueError(
-                f"line {number}: {level!r} is not an index level"
-            ) from None
+            raise ValueError(f"line {number}: {level!r} is not an index level") from None
         if (year, month_number) in values:
-            raise ValueError(
-                f"line {number}: {year}-{month_number:02d} appears twice"
-            )
+            raise ValueError(f"line {number}: {year}-{month_number:02d} appears twice")
         values[(year, month_number)] = value
     if not values:
         raise ValueError("the index file has no figures in it")
@@ -311,7 +300,6 @@ def _note(arguments: argparse.Namespace, reference: date) -> FloatingNote:
     )
 
 
-
 def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
     """A CMS fixing, its convexity adjustment, and the two things that move it.
 
@@ -333,9 +321,7 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
         tenor=Frequency[arguments.index_tenor.upper()],
         basis=_basis(arguments.index_basis),
     )
-    quotes, spreads = parse_forecast_quotes(
-        Path(arguments.forecast).read_text(), reference, index
-    )
+    quotes, spreads = parse_forecast_quotes(Path(arguments.forecast).read_text(), reference, index)
     if spreads:
         raise BadInput(
             "a CMS needs a projection curve for its own index, and a file of "
@@ -388,9 +374,7 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
         weight = year_fraction(
             period.start, period.end, _basis(arguments.fixed_basis)
         ) * curve.discount(period.payment)
-        weighted += weight * year_fraction(
-            expiry, period.payment, _basis(arguments.fixed_basis)
-        )
+        weighted += weight * year_fraction(expiry, period.payment, _basis(arguments.fixed_basis))
         total += weight
 
     payload: dict[str, object] = {
@@ -433,16 +417,12 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
         walk: list[dict[str, float]] = []
         for months in arguments.delays:
             later = fixing(add_months(expiry, months, keep_end_of_month=True))
-            moved = later.swaplet(
-                curve, projection, arguments.volatility, quadrature=quadrature
-            )
+            moved = later.swaplet(curve, projection, arguments.volatility, quadrature=quadrature)
             walk.append(
                 {
                     "delay_months": float(months),
                     "adjustment_basis_points": moved.basis_points,
-                    "alpha_slope": later.mapping(curve, projection).slope(
-                        moved.forward
-                    ),
+                    "alpha_slope": later.mapping(curve, projection).slope(moved.forward),
                 }
             )
         payload["payment_delay"] = walk
@@ -451,16 +431,13 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
     if arguments.skews:
         tilted: list[dict[str, object]] = []
         for slope in arguments.skews:
+
             def surface(strike: float, slope: float = slope) -> float:
-                level = float(arguments.volatility) + slope * (
-                    strike - swaplet.forward
-                )
+                level = float(arguments.volatility) + slope * (strike - swaplet.forward)
                 return min(max(level, 0.02), 2.0)
 
             try:
-                skewed = here.swaplet(
-                    curve, projection, surface, quadrature=quadrature
-                )
+                skewed = here.swaplet(curve, projection, surface, quadrature=quadrature)
             except BadConvexity as problem:
                 tilted.append({"skew": slope, "unreachable": str(problem)})
                 continue
@@ -469,9 +446,7 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
                     "skew": slope,
                     "adjustment_basis_points": skewed.basis_points,
                     "share_of_flat": (
-                        skewed.adjustment / swaplet.adjustment
-                        if swaplet.adjustment != 0.0
-                        else 0.0
+                        skewed.adjustment / swaplet.adjustment if swaplet.adjustment != 0.0 else 0.0
                     ),
                     "truncation": skewed.replication.truncation,
                 }
@@ -488,15 +463,11 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
             frequency=Frequency[arguments.fixed_frequency.upper()],
             basis=_basis(arguments.fixed_basis),
         )
-        strike = (
-            arguments.strike if arguments.strike is not None else swaplet.forward
-        )
+        strike = arguments.strike if arguments.strike is not None else swaplet.forward
         payload["leg"] = {
             "maturity": leg.maturity.isoformat(),
             "fixings": len(leg.fixings(reference)),
-            "swaplets": leg.value(
-                curve, projection, arguments.volatility, quadrature=quadrature
-            ),
+            "swaplets": leg.value(curve, projection, arguments.volatility, quadrature=quadrature),
             "strike": strike,
             "cap": leg.value(
                 curve,
@@ -567,7 +538,11 @@ def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
         accruals.append(year_fraction(period.adjusted_start, period.adjusted_end, basis))
 
     value = cap_price(
-        curve, model, dates=times, strike=arguments.strike, accruals=accruals,
+        curve,
+        model,
+        dates=times,
+        strike=arguments.strike,
+        accruals=accruals,
         floor=arguments.floor,
     )
     caplets = [
@@ -629,9 +604,7 @@ def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
         rows: list[dict[str, object]] = []
         pair = probes[0], probes[-1]
         for trial_rho in (-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9):
-            template = G2(
-                a=model.a, sigma=model.sigma, b=model.b, eta=model.eta, rho=trial_rho
-            )
+            template = G2(a=model.a, sigma=model.sigma, b=model.b, eta=model.eta, rho=trial_rho)
             try:
                 root = fit_fast_volatility(
                     curve,
@@ -655,9 +628,7 @@ def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
                     }
                 )
                 continue
-            fitted = G2(
-                a=model.a, sigma=root.value, b=model.b, eta=model.eta, rho=trial_rho
-            )
+            fitted = G2(a=model.a, sigma=root.value, b=model.b, eta=model.eta, rho=trial_rho)
             matched = cap_price(
                 curve,
                 fitted,
@@ -755,13 +726,9 @@ def run_floating(arguments: argparse.Namespace) -> dict[str, object]:
             built.curve, arguments.quote, reference, current_fixing=fixing
         )
         margin = solved.value
-    dirty = note.dirty_price(
-        built.curve, reference, margin=margin, current_fixing=fixing
-    )
+    dirty = note.dirty_price(built.curve, reference, margin=margin, current_fixing=fixing)
     accrued = note.accrued(reference, curve=built.curve, current_fixing=fixing)
-    coupons = note.coupons(
-        built.curve, reference, margin=margin, current_fixing=fixing
-    )
+    coupons = note.coupons(built.curve, reference, margin=margin, current_fixing=fixing)
     result: dict[str, object] = {
         "note": note.name,
         "settlement": reference.isoformat(),
@@ -830,9 +797,7 @@ def run_linker(arguments: argparse.Namespace) -> dict[str, object]:
         real_clean = bond.real_clean_price(real_yield, reference)
 
     ratio = bond.index_ratio(index, reference)
-    redemption_ratio, floored = bond.redemption_ratio(
-        index, projection=arguments.projection
-    )
+    redemption_ratio, floored = bond.redemption_ratio(index, projection=arguments.projection)
     nominal = bond.nominal_price_from_curve(
         built.curve, index, reference, projection=arguments.projection
     )
@@ -862,9 +827,7 @@ def run_linker(arguments: argparse.Namespace) -> dict[str, object]:
         result["inflation_implied_by_the_invoice"] = implied.value
     if arguments.nominal_yield is not None:
         result["nominal_yield"] = arguments.nominal_yield
-        result["breakeven_exact"] = breakeven_inflation(
-            arguments.nominal_yield, real_yield
-        )
+        result["breakeven_exact"] = breakeven_inflation(arguments.nominal_yield, real_yield)
         result["breakeven_quoted"] = breakeven_inflation(
             arguments.nominal_yield, real_yield, exact=False
         )
@@ -889,9 +852,7 @@ def run_linker(arguments: argparse.Namespace) -> dict[str, object]:
                 "projected": flow.projected,
                 "redemption": flow.redemption,
             }
-            for flow in bond.nominal_cashflows(
-                index, reference, projection=arguments.projection
-            )
+            for flow in bond.nominal_cashflows(index, reference, projection=arguments.projection)
         ]
     return result
 
@@ -957,8 +918,7 @@ def run_risk(arguments: argparse.Namespace) -> dict[str, object]:
         ],
         "key_rate_sum": sum(one.duration for one in parts),
         "instruments": [
-            {"quote": one.name, "value": one.value}
-            for one in instrument_risk(value, built)
+            {"quote": one.name, "value": one.value} for one in instrument_risk(value, built)
         ],
     }
 
@@ -1050,9 +1010,7 @@ def parse_forecast_quotes(
                     )
                 )
             elif kind == "basis":
-                frequency = (
-                    Frequency[fields[3].upper()] if len(fields) > 3 else flat_frequency
-                )
+                frequency = Frequency[fields[3].upper()] if len(fields) > 3 else flat_frequency
                 if frequency is index.tenor:
                     raise BadInput(
                         f"line {number}: the basis leg and the flat leg are both on "
@@ -1232,9 +1190,7 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
         tenor=Frequency[arguments.index_tenor.upper()],
         basis=_basis(arguments.index_basis),
     )
-    quotes, spreads = parse_forecast_quotes(
-        Path(arguments.forecast).read_text(), reference, index
-    )
+    quotes, spreads = parse_forecast_quotes(Path(arguments.forecast).read_text(), reference, index)
     if spreads:
         raise BadInput(
             "a swaption needs a projection curve for its own index, and a file of "
@@ -1250,9 +1206,7 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
     )
 
     expiry = date.fromisoformat(arguments.expiry)
-    effective = (
-        date.fromisoformat(arguments.effective) if arguments.effective else expiry
-    )
+    effective = date.fromisoformat(arguments.effective) if arguments.effective else expiry
     maturity = date.fromisoformat(arguments.swap_maturity)
     payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
     convention = Convention.NORMAL if arguments.normal else Convention.LOGNORMAL
@@ -1296,9 +1250,7 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
     )
     shifted_forward = probe.forward_rate(shifted, forecast.curve)
 
-    strip = Cap(
-        effective=effective, maturity=maturity, strike=strike, payoff=payoff, index=index
-    )
+    strip = Cap(effective=effective, maturity=maturity, strike=strike, payoff=payoff, index=index)
     strip_value = strip.value(
         discounting.curve,
         forecast.curve,
@@ -1324,10 +1276,7 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
             "value": moved,
             "relative_change_in_value": (moved - value) / value if value else 0.0,
             "relative_change_in_forward": (shifted_forward - forward) / forward,
-            "relative_change_in_annuity": (
-                option.annuity(shifted) - annuity
-            )
-            / annuity,
+            "relative_change_in_annuity": (option.annuity(shifted) - annuity) / annuity,
         },
         "strip": {
             "value": strip_value,
@@ -1369,9 +1318,7 @@ def run_hullwhite(arguments: argparse.Namespace) -> dict[str, object]:
     discounting = build(arguments)
     curve = discounting.curve
     expiry = date.fromisoformat(arguments.expiry)
-    effective = (
-        date.fromisoformat(arguments.effective) if arguments.effective else expiry
-    )
+    effective = date.fromisoformat(arguments.effective) if arguments.effective else expiry
     maturity = date.fromisoformat(arguments.swap_maturity)
     payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
     frequency = Frequency[arguments.fixed_frequency.upper()]
@@ -1395,8 +1342,7 @@ def run_hullwhite(arguments: argparse.Namespace) -> dict[str, object]:
     probe = make(0.03)
     schedule = probe.swap.fixed_schedule()
     annuity = sum(
-        year_fraction(period.start, period.end, fixed_basis)
-        * curve.discount(period.payment)
+        year_fraction(period.start, period.end, fixed_basis) * curve.discount(period.payment)
         for period in schedule
     )
     forward = (
@@ -1524,9 +1470,7 @@ def _lines(payload: dict[str, object], indent: str) -> list[str]:
             for entry in item:
                 if isinstance(entry, dict):
                     lines.append(
-                        indent
-                        + "  "
-                        + "  ".join(f"{k}={_show(v)}" for k, v in entry.items())
+                        indent + "  " + "  ".join(f"{k}={_show(v)}" for k, v in entry.items())
                     )
                 else:  # pragma: no cover - every list here holds dicts
                     lines.append(f"{indent}  {entry}")
@@ -1613,8 +1557,7 @@ def run_bermudan(arguments: argparse.Namespace) -> dict[str, object]:
     )
     schedule = probe.schedule()
     annuity = sum(
-        year_fraction(period.start, period.end, fixed_basis)
-        * curve.discount(period.payment)
+        year_fraction(period.start, period.end, fixed_basis) * curve.discount(period.payment)
         for period in schedule
     )
     forward = (
@@ -1671,11 +1614,123 @@ def run_bermudan(arguments: argparse.Namespace) -> dict[str, object]:
     }
     if arguments.quadrature:
         payload["europeans_by_quadrature"] = list(
-            coterminal_europeans(
-                curve, model, option, reference, time_basis, Method.QUADRATURE
-            )
+            coterminal_europeans(curve, model, option, reference, time_basis, Method.QUADRATURE)
         )
     return payload
+
+
+def run_caplets(arguments: argparse.Namespace) -> dict[str, object]:
+    """Strip caplet volatilities out of flat cap quotes and say what they cost.
+
+    The repriced column is there for the same reason the credit command prints
+    the triangle beside the hazard rate: it is the only check on the bootstrap
+    that does not go through another approximation, and it is cheap.
+
+    The sensitivity and indeterminacy columns are the two ways this problem
+    goes wrong, and they fail at opposite ends. The first says how far a basis
+    point of quoting error moves the bucket, which grows with maturity as each
+    bucket becomes a smaller share of its cap's premium. The second says how
+    sharply the bucket is pinned at a perfect quote, which collapses as the
+    strike moves into the money -- a premium can be monotone in the volatility
+    and still not respond to it.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    discounting = build(arguments)
+    index = ForecastIndex(
+        tenor=Frequency[arguments.index_tenor.upper()],
+        basis=_basis(arguments.index_basis),
+    )
+    projection = shifted_forecast(discounting.curve, arguments.basis_spread)
+    quotes = _cap_quotes(Path(arguments.caps).read_text())
+    payoff = Payoff.RECEIVER if arguments.floor else Payoff.PAYER
+    convention = Convention.NORMAL if arguments.normal else Convention.LOGNORMAL
+
+    curve = strip_caplets(
+        quotes,
+        date.fromisoformat(arguments.effective),
+        arguments.strike,
+        discounting.curve,
+        projection,
+        index=index,
+        payoff=payoff,
+        convention=convention,
+        vol_basis=_basis(arguments.vol_basis),
+    )
+
+    rows = []
+    worst = 0.0
+    for bucket in curve.buckets:
+        repriced = flat_volatility(
+            curve,
+            bucket.maturity,
+            date.fromisoformat(arguments.effective),
+            discounting.curve,
+            projection,
+            index=index,
+            payoff=payoff,
+            convention=convention,
+            vol_basis=_basis(arguments.vol_basis),
+        )
+        worst = max(worst, abs(repriced - bucket.quoted))
+        rows.append(
+            {
+                "maturity": bucket.maturity.isoformat(),
+                "first_fixing": bucket.first_fixing.isoformat(),
+                "last_fixing": bucket.last_fixing.isoformat(),
+                "periods": bucket.periods,
+                "quoted": bucket.quoted,
+                "repriced": repriced,
+                "caplet": bucket.volatility,
+                "over_quote": bucket.volatility - bucket.quoted,
+                "sensitivity": bucket.sensitivity,
+                "indeterminacy": bucket.indeterminacy,
+            }
+        )
+    low, high = curve.stripped_span
+    quoted_low, quoted_high = curve.quoted_span
+    return {
+        "reference": reference.isoformat(),
+        "strike": arguments.strike,
+        "buckets": rows,
+        "quoted_span": [quoted_low, quoted_high],
+        "stripped_span": [low, high],
+        "worst_repricing_error": worst,
+    }
+
+
+def _cap_quotes(text: str) -> list[CapQuote]:
+    """Parse ``maturity,flat-volatility`` rows.
+
+    Volatilities are decimals -- 0.18, not 18 -- and a value above one is
+    refused rather than used, for the same reason the futures basket refuses a
+    coupon in per cent: a file in the other unit parses perfectly and is wrong
+    by a factor of a hundred.
+    """
+    quotes = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = [field.strip() for field in line.replace(",", " ").split()]
+        if len(fields) != 2:
+            raise BadInput(
+                f"line {number} has {len(fields)} fields; a cap quote is a "
+                f"maturity and a flat volatility: 2031-01-15,0.26"
+            )
+        try:
+            maturity = date.fromisoformat(fields[0])
+        except ValueError as bad:
+            raise BadInput(f"line {number}: {fields[0]!r} is not a date") from bad
+        volatility = float(fields[1])
+        if volatility > 1.0:
+            raise BadInput(
+                f"line {number} quotes a volatility of {volatility}, which is "
+                "over 100%. Quotes here are decimals: 0.26, not 26."
+            )
+        quotes.append(CapQuote(maturity, volatility))
+    if not quotes:
+        raise BadInput("the cap quote file has no quotes in it")
+    return quotes
 
 
 def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
@@ -1781,9 +1836,7 @@ def _basket(text: str, *, bond_basis: Basis, frequency: Frequency) -> list[tuple
         if not line:
             continue
         fields = (
-            [cell.strip() for cell in line.split(",", 3)]
-            if "," in line
-            else line.split(None, 3)
+            [cell.strip() for cell in line.split(",", 3)] if "," in line else line.split(None, 3)
         )
         if len(fields) < 3:
             raise ValueError(
@@ -1838,9 +1891,7 @@ def run_futures(arguments: argparse.Namespace) -> dict[str, object]:
     """
     bond_basis = _basis(arguments.bond_basis)
     frequency = Frequency[arguments.frequency.upper()]
-    basket = _basket(
-        Path(arguments.basket).read_text(), bond_basis=bond_basis, frequency=frequency
-    )
+    basket = _basket(Path(arguments.basket).read_text(), bond_basis=bond_basis, frequency=frequency)
     settlement = date.fromisoformat(arguments.settlement)
     future = BondFuture(
         first_delivery=date.fromisoformat(arguments.first_delivery),
@@ -1875,8 +1926,7 @@ def run_futures(arguments: argparse.Namespace) -> dict[str, object]:
             "financed_balance": entry.financed_balance,
             "breakeven_futures_price": entry.breakeven_futures_price,
             "interim_coupons": [
-                {"date": day.isoformat(), "amount": amount}
-                for day, amount in entry.interim_coupons
+                {"date": day.isoformat(), "amount": amount} for day, amount in entry.interim_coupons
             ],
         }
         for entry in ranked.basis
@@ -1938,9 +1988,7 @@ def parser() -> argparse.ArgumentParser:
 
     def shared(sub: argparse.ArgumentParser) -> None:
         sub.add_argument("quotes", help="a file of instrument quotes")
-        sub.add_argument(
-            "--reference", required=True, help="the curve's reference date, ISO"
-        )
+        sub.add_argument("--reference", required=True, help="the curve's reference date, ISO")
         sub.add_argument(
             "--basis",
             required=True,
@@ -1974,9 +2022,7 @@ def parser() -> argparse.ArgumentParser:
     price = subcommands.add_parser("price", help="price a bond and measure its risk")
     shared(price)
     bond_arguments(price)
-    price.add_argument(
-        "--quote", type=float, help="a clean price, to extract spreads against"
-    )
+    price.add_argument("--quote", type=float, help="a clean price, to extract spreads against")
     price.set_defaults(run=run_price)
 
     risk = subcommands.add_parser("risk", help="break the risk down two ways")
@@ -2075,9 +2121,7 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     shared(linked)
-    linked.add_argument(
-        "--index", required=True, help="a file of published index levels"
-    )
+    linked.add_argument("--index", required=True, help="a file of published index levels")
     linked.add_argument("--maturity", required=True, help="the bond's maturity, ISO")
     linked.add_argument(
         "--coupon", required=True, type=float, help="the real annual rate, as 0.015"
@@ -2103,9 +2147,7 @@ def parser() -> argparse.ArgumentParser:
         choices=[one.name for one in Basis],
     )
     real = linked.add_mutually_exclusive_group(required=True)
-    real.add_argument(
-        "--real-yield", type=float, help="price at this real yield, as 0.012"
-    )
+    real.add_argument("--real-yield", type=float, help="price at this real yield, as 0.012")
     real.add_argument(
         "--real-quote",
         type=float,
@@ -2150,6 +2192,60 @@ def parser() -> argparse.ArgumentParser:
     )
     option.set_defaults(run=run_option)
 
+    caplets = subcommands.add_parser(
+        "caplets",
+        help="strip caplet volatilities from flat cap quotes",
+        description=(
+            "Bootstraps a piecewise-constant caplet volatility curve from flat "
+            "cap volatilities quoted one per line as 'maturity,volatility', and "
+            "reports each bucket beside the quote that set it. Two conditioning "
+            "columns come with it, because this problem fails at both ends: the "
+            "sensitivity, which says how far a basis point of quoting error "
+            "moves the bucket and grows with maturity, and the indeterminacy, "
+            "which says how sharply the bucket is pinned at a perfect quote and "
+            "collapses as the strike moves into the money. All the caps share "
+            "one strike, because caplet volatilities at two strikes are not the "
+            "same quantity."
+        ),
+    )
+    shared(caplets)
+    caplets.add_argument("--caps", required=True, help="a file of maturity,flat-volatility rows")
+    caplets.add_argument("--effective", required=True, help="start of every cap in the set, ISO")
+    caplets.add_argument(
+        "--strike", required=True, type=float, help="the common cap rate, as 0.035"
+    )
+    caplets.add_argument("--floor", action="store_true", help="strip from floors instead of caps")
+    caplets.add_argument(
+        "--normal", action="store_true", help="normal volatilities rather than lognormal"
+    )
+    caplets.add_argument(
+        "--basis-spread",
+        dest="basis_spread",
+        type=float,
+        default=0.0,
+        help="flat spread of the projection curve over the discount curve",
+    )
+    caplets.add_argument(
+        "--index-tenor",
+        dest="index_tenor",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+    )
+    caplets.add_argument(
+        "--index-basis",
+        dest="index_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+    )
+    caplets.add_argument(
+        "--vol-basis",
+        dest="vol_basis",
+        default=Basis.ACT_365F.name,
+        choices=[one.name for one in Basis],
+        help="day count the volatility's time to fixing is measured in",
+    )
+    caplets.set_defaults(run=run_caplets)
+
     credit = subcommands.add_parser(
         "credit",
         help="strip a survival curve from credit default swap spreads",
@@ -2166,9 +2262,7 @@ def parser() -> argparse.ArgumentParser:
     credit.add_argument(
         "--spreads", required=True, help="a file of maturity,spread-in-basis-points rows"
     )
-    credit.add_argument(
-        "--recovery", type=float, default=0.4, help="fraction of face recovered"
-    )
+    credit.add_argument("--recovery", type=float, default=0.4, help="fraction of face recovered")
     credit.add_argument(
         "--frequency",
         default="QUARTERLY",
@@ -2204,18 +2298,14 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     futures.add_argument("basket", help="a file of maturity,coupon,clean-price rows")
-    futures.add_argument(
-        "--settlement", required=True, help="when the cash bond is bought, ISO"
-    )
+    futures.add_argument("--settlement", required=True, help="when the cash bond is bought, ISO")
     futures.add_argument(
         "--first-delivery",
         dest="first_delivery",
         required=True,
         help="first day of the delivery month, which is when the factor is computed",
     )
-    futures.add_argument(
-        "--delivery", required=True, help="the delivery date assumed, ISO"
-    )
+    futures.add_argument("--delivery", required=True, help="the delivery date assumed, ISO")
     futures.add_argument(
         "--price", required=True, type=float, help="the quoted futures price, per 100"
     )
@@ -2592,9 +2682,7 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         help="the fast factor's a, in reciprocal years",
     )
-    g2.add_argument(
-        "--volatility", required=True, type=float, help="the fast factor's sigma"
-    )
+    g2.add_argument("--volatility", required=True, type=float, help="the fast factor's sigma")
     g2.add_argument(
         "--slow-mean-reversion",
         dest="slow_mean_reversion",

@@ -128,15 +128,18 @@ def test_the_price_command_agrees_with_the_library(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "price", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.05",
+        "--json",
+        "price",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.05",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
 
-    curve = bootstrap(
-        REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F
-    ).curve
+    curve = bootstrap(REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F).curve
     bond = Bond(REFERENCE, date(2031, 1, 5), 0.05)
     assert payload["dirty"] == pytest.approx(bond.price_from_curve(curve, REFERENCE))
     assert payload["clean"] == pytest.approx(payload["dirty"] - payload["accrued"])
@@ -149,8 +152,15 @@ def test_a_quoted_price_adds_both_spreads(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "price", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.05", "--quote", "120.0",
+        "--json",
+        "price",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.05",
+        "--quote",
+        "120.0",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -163,9 +173,17 @@ def test_the_risk_command_reports_the_sum_identity(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "risk", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.05",
-        "--buckets", "0.5", "2", "10",
+        "--json",
+        "risk",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.05",
+        "--buckets",
+        "0.5",
+        "2",
+        "10",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -178,9 +196,17 @@ def test_the_option_command_reports_the_option_cost(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "option", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.05",
-        "--volatility", "0.15", "--first-call", "2026-01-05",
+        "--json",
+        "option",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.05",
+        "--volatility",
+        "0.15",
+        "--first-call",
+        "2026-01-05",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -192,13 +218,20 @@ def test_the_option_command_reports_the_option_cost(
     assert payload["option_cost"] == pytest.approx(payload["z_spread"], abs=1e-12)
 
 
-def test_a_put_goes_the_other_way(
-    quote_file: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_a_put_goes_the_other_way(quote_file: str, capsys: pytest.CaptureFixture[str]) -> None:
     arguments = [
-        "--json", "option", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.05",
-        "--volatility", "0.15", "--first-call", "2026-01-05", "--put",
+        "--json",
+        "option",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.05",
+        "--volatility",
+        "0.15",
+        "--first-call",
+        "2026-01-05",
+        "--put",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -231,9 +264,16 @@ def test_a_maturity_between_lattice_nodes_is_reported(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "option", *shared(quote_file),
-        "--maturity", "2030-04-17", "--coupon", "0.05",
-        "--volatility", "0.15", "--first-call", "2026-01-05",
+        "option",
+        *shared(quote_file),
+        "--maturity",
+        "2030-04-17",
+        "--coupon",
+        "0.05",
+        "--volatility",
+        "0.15",
+        "--first-call",
+        "2026-01-05",
     ]
     assert main(arguments) == 2
     assert "whole number" in capsys.readouterr().err
@@ -244,9 +284,7 @@ def test_a_command_is_required() -> None:
         main([])
 
 
-def test_the_plain_output_is_readable(
-    quote_file: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_the_plain_output_is_readable(quote_file: str, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["curve", *shared(quote_file)]) == 0
     out = capsys.readouterr().out
     assert "reprices: True" in out
@@ -258,9 +296,15 @@ def test_the_horizon_command_reports_the_carry_identity(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "horizon", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.03",
-        "--horizon", "2022-01-05",
+        "--json",
+        "horizon",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.03",
+        "--horizon",
+        "2022-01-05",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -278,9 +322,15 @@ def test_the_horizon_command_shows_where_the_return_comes_from(
     """On this screen the curve runs from 20bp to 220bp, so a ten-year bond
     held for a year earns far more from rolling down it than from holding it."""
     arguments = [
-        "--json", "horizon", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.03",
-        "--horizon", "2022-01-05",
+        "--json",
+        "horizon",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.03",
+        "--horizon",
+        "2022-01-05",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -293,15 +343,19 @@ def test_the_horizon_command_agrees_with_the_library(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "horizon", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.05",
-        "--horizon", "2023-01-05",
+        "--json",
+        "horizon",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.05",
+        "--horizon",
+        "2023-01-05",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
-    curve = bootstrap(
-        REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F
-    ).curve
+    curve = bootstrap(REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F).curve
     bond = Bond(REFERENCE, date(2031, 1, 5), 0.05)
     expected = horizon_return(bond, curve, REFERENCE, date(2023, 1, 5))
     assert payload["roll_down"] == pytest.approx(expected.roll_down)
@@ -312,9 +366,14 @@ def test_a_horizon_past_maturity_is_reported_rather_than_raised(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "horizon", *shared(quote_file),
-        "--maturity", "2031-01-05", "--coupon", "0.03",
-        "--horizon", "2032-01-05",
+        "horizon",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.03",
+        "--horizon",
+        "2032-01-05",
     ]
     assert main(arguments) == 2
     assert "no price at the" in capsys.readouterr().err
@@ -333,8 +392,13 @@ def test_the_floating_command_reports_par_and_a_rate_duration_of_zero(
     A report that gave a single "duration" would be giving the wrong one.
     """
     arguments = [
-        "--json", "floating", *shared(quote_file),
-        "--maturity", "2026-01-05", "--quoted-margin", "0.0075",
+        "--json",
+        "floating",
+        *shared(quote_file),
+        "--maturity",
+        "2026-01-05",
+        "--quoted-margin",
+        "0.0075",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -353,9 +417,17 @@ def test_the_floating_command_solves_a_margin_against_a_quote(
 ) -> None:
     """And the margin it reports has to reprice the quote it was given."""
     arguments = [
-        "--json", "floating", *shared(quote_file),
-        "--maturity", "2026-01-05", "--quoted-margin", "0.0075",
-        "--quote", "98.5", "--fixing", "0.004",
+        "--json",
+        "floating",
+        *shared(quote_file),
+        "--maturity",
+        "2026-01-05",
+        "--quoted-margin",
+        "0.0075",
+        "--quote",
+        "98.5",
+        "--fixing",
+        "0.004",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -372,21 +444,22 @@ def test_the_floating_command_agrees_with_the_library(
     quote_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     arguments = [
-        "--json", "floating", *shared(quote_file),
-        "--maturity", "2031-01-05", "--quoted-margin", "0.005",
-        "--margin", "0.012", "--coupons",
+        "--json",
+        "floating",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--quoted-margin",
+        "0.005",
+        "--margin",
+        "0.012",
+        "--coupons",
     ]
     assert main(arguments) == 0
     payload = json.loads(capsys.readouterr().out)
-    curve = bootstrap(
-        REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F
-    ).curve
-    note = FloatingNote(
-        REFERENCE, date(2031, 1, 5), 0.005, Frequency.QUARTERLY, Basis.ACT_360
-    )
-    assert payload["dirty"] == pytest.approx(
-        note.dirty_price(curve, REFERENCE, margin=0.012)
-    )
+    curve = bootstrap(REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F).curve
+    note = FloatingNote(REFERENCE, date(2031, 1, 5), 0.005, Frequency.QUARTERLY, Basis.ACT_360)
+    assert payload["dirty"] == pytest.approx(note.dirty_price(curve, REFERENCE, margin=0.012))
     assert payload["spread_duration"] == pytest.approx(
         note.spread_duration(curve, REFERENCE, margin=0.012)
     )
@@ -400,8 +473,13 @@ def test_the_coupon_listing_is_off_unless_asked_for(
 ) -> None:
     """Twenty rows of projection is a report about the wrong thing by default."""
     arguments = [
-        "--json", "floating", *shared(quote_file),
-        "--maturity", "2026-01-05", "--quoted-margin", "0.0075",
+        "--json",
+        "floating",
+        *shared(quote_file),
+        "--maturity",
+        "2026-01-05",
+        "--quoted-margin",
+        "0.0075",
     ]
     assert main(arguments) == 0
     assert "coupons" not in json.loads(capsys.readouterr().out)
@@ -419,9 +497,14 @@ def test_a_floater_settling_mid_period_without_a_fixing_is_reported(
     ordinary case, not a contrived one.
     """
     arguments = [
-        "floating", *shared(quote_file),
-        "--maturity", "2026-01-07", "--quoted-margin", "0.0075",
-        "--issued", "2019-01-07",
+        "floating",
+        *shared(quote_file),
+        "--maturity",
+        "2026-01-07",
+        "--quoted-margin",
+        "0.0075",
+        "--issued",
+        "2019-01-07",
     ]
     assert main(arguments) == 2
     assert "started before the curve's reference date" in capsys.readouterr().err
@@ -474,10 +557,7 @@ def linker_argv(quote_file: str, index_file: str, *extra: str) -> list[str]:
 def test_the_linker_reports_both_spaces(
     quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert (
-        main(["--json", *linker_argv(quote_file, index_file, "--real-yield", "0.005")])
-        == 0
-    )
+    assert main(["--json", *linker_argv(quote_file, index_file, "--real-yield", "0.005")]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["index_ratio"] > 1.0
     assert payload["real_yield"] == 0.005
@@ -494,10 +574,7 @@ def test_the_linker_reports_both_spaces(
 def test_the_linker_solves_a_real_yield_from_a_real_price(
     quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert (
-        main(["--json", *linker_argv(quote_file, index_file, "--real-quote", "99.25")])
-        == 0
-    )
+    assert main(["--json", *linker_argv(quote_file, index_file, "--real-quote", "99.25")]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["real_clean"] == pytest.approx(99.25)
     bond = LinkedBond(
@@ -534,10 +611,7 @@ def test_the_linker_reports_both_breakeven_forms(
 def test_the_linker_splits_the_next_years_accretion(
     quote_file: str, index_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert (
-        main(["--json", *linker_argv(quote_file, index_file, "--real-yield", "0.005")])
-        == 0
-    )
+    assert main(["--json", *linker_argv(quote_file, index_file, "--real-yield", "0.005")]) == 0
     split = json.loads(capsys.readouterr().out)["accretion_one_year"]
     assert 0.0 < split["published_share"] < 1.0
     assert (1.0 + split["published"]) * (1.0 + split["projected"]) == pytest.approx(
@@ -565,9 +639,7 @@ def test_the_linker_can_turn_the_floor_off(
 ) -> None:
     deflating = tmp_path / "deflation.txt"
     deflating.write_text(index_text(annual=-0.04))
-    argv = linker_argv(
-        quote_file, str(deflating), "--real-yield", "0.005", "--projection-off"
-    )
+    argv = linker_argv(quote_file, str(deflating), "--real-yield", "0.005", "--projection-off")
     # `--projection-off` is not an option; the point of this call is the floor.
     argv = [argument for argument in argv if argument != "--projection-off"]
     assert main(["--json", *argv]) == 0
@@ -755,8 +827,15 @@ def test_credit_recovery_moves_the_price_the_right_way(
     prices = []
     for recovery in ("0.1", "0.4", "0.7"):
         arguments = [
-            "--json", "credit", *shared(quote_file), "--spreads", spread_file,
-            "--recovery", recovery, "--bond-maturity", "2026-01-05",
+            "--json",
+            "credit",
+            *shared(quote_file),
+            "--spreads",
+            spread_file,
+            "--recovery",
+            recovery,
+            "--bond-maturity",
+            "2026-01-05",
         ]
         assert main(arguments) == 0
         prices.append(json.loads(capsys.readouterr().out)["bond"]["risky_price"])
@@ -826,9 +905,7 @@ def futures_arguments(basket: str) -> list[str]:
     ]
 
 
-def test_futures_needs_no_curve(
-    basket_file: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_futures_needs_no_curve(basket_file: str, capsys: pytest.CaptureFixture[str]) -> None:
     """The one command with no quote file, because it reads no curve.
 
     Worth a test of its own: every other subcommand requires ``--reference`` and
@@ -1069,9 +1146,7 @@ def test_the_forecast_file_parses_all_three_kinds() -> None:
     assert quotes[0].rate == pytest.approx(0.0312)
     assert spreads == []
 
-    quotes, spreads = parse_forecast_quotes(
-        "basis 2031-01-15 0.0008", date(2026, 1, 15), index
-    )
+    quotes, spreads = parse_forecast_quotes("basis 2031-01-15 0.0008", date(2026, 1, 15), index)
     assert quotes == []
     assert spreads[0].spread == pytest.approx(0.0008)
     assert spreads[0].flat_index.tenor is Frequency.SEMI_ANNUAL
@@ -1132,17 +1207,13 @@ def test_multicurve_recovers_the_quoted_par_rate_and_splits_the_risk(
     # The ten-year quote goes in and comes back out.
     assert payload["swap"]["par_rate"] == pytest.approx(0.0389, abs=1e-12)
     assert payload["swap"]["par_rate_on_one_curve"] < payload["swap"]["par_rate"]
-    assert payload["swap"]["basis_points_from_separating"] == pytest.approx(
-        24.15, abs=0.05
-    )
+    assert payload["swap"]["basis_points_from_separating"] == pytest.approx(24.15, abs=0.05)
     # Every quoted forward basis is in the twenty-something basis point band the
     # quotes imply, which is the check that the two curves were not swapped.
     assert all(20.0 < one["basis_points"] < 30.0 for one in payload["forward_basis"])
 
     risk = payload["swap"]["risk"]
-    assert abs(risk["from_the_forecast_curve"]) > 100 * abs(
-        risk["from_the_discount_curve"]
-    )
+    assert abs(risk["from_the_forecast_curve"]) > 100 * abs(risk["from_the_discount_curve"])
     assert risk["cross_term"] == pytest.approx(
         risk["from_both_together"]
         - risk["from_the_discount_curve"]
@@ -1213,9 +1284,7 @@ def test_multicurve_refuses_a_lag_that_pays_past_the_curve(
     forecast = tmp_path / "forecast.txt"
     forecast.write_text(FORECAST_QUOTES)
     arguments = multicurve_arguments(ois_file, str(forecast))
-    assert (
-        main([*arguments, "--maturity", "2036-01-15", "--payment-lag", "300"]) == 2
-    )
+    assert main([*arguments, "--maturity", "2036-01-15", "--payment-lag", "300"]) == 2
     message = capsys.readouterr().err
     assert "settle past the discount curve" in message
     assert "pays with a lag" in message
@@ -1240,10 +1309,7 @@ def test_multicurve_carries_a_payment_lag_through_to_the_par_rate(
     assert payload["swap"]["par_rate"] == pytest.approx(0.0389, abs=1e-12)
     prompt = payload["swap"]["par_rate_on_one_curve"]
 
-    assert (
-        main(["--json", *arguments, "--maturity", "2036-01-15", "--payment-lag", "2"])
-        == 0
-    )
+    assert main(["--json", *arguments, "--maturity", "2036-01-15", "--payment-lag", "2"]) == 0
     lagged = json.loads(capsys.readouterr().out)
     # The quote still round-trips, because the curve was fitted under the lag.
     assert lagged["swap"]["par_rate"] == pytest.approx(0.0389, abs=1e-12)
@@ -1256,15 +1322,21 @@ def test_multicurve_carries_a_payment_lag_through_to_the_par_rate(
 
 # -- swaption -----------------------------------------------------------------
 
-LONG_OIS = OIS_QUOTES + """
+LONG_OIS = (
+    OIS_QUOTES
+    + """
 swap     2041-01-15  0.0372  ANNUAL  ACT_365F
 swap     2046-01-15  0.0374  ANNUAL  ACT_365F
 """
+)
 
-LONG_FORECAST = FORECAST_QUOTES + """
+LONG_FORECAST = (
+    FORECAST_QUOTES
+    + """
 swap     2041-01-15  0.0393
 swap     2046-01-15  0.0395
 """
+)
 
 
 @pytest.fixture
@@ -1356,10 +1428,7 @@ def test_cms_walks_the_payment_date_down_through_zero(
     long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The table that says the adjustment is not simply growing with time."""
-    assert (
-        main(["--json", *cms_arguments(long_curves), "--delays", "0", "6", "60", "120"])
-        == 0
-    )
+    assert main(["--json", *cms_arguments(long_curves), "--delays", "0", "6", "60", "120"]) == 0
     walk = json.loads(capsys.readouterr().out)["payment_delay"]
     adjustments = [row["adjustment_basis_points"] for row in walk]
     slopes = [row["alpha_slope"] for row in walk]
@@ -1377,10 +1446,7 @@ def test_cms_says_which_skews_have_no_answer(
     The rows either side of it still price, so this is the surface being
     refused rather than the command giving up.
     """
-    assert (
-        main(["--json", *cms_arguments(long_curves), "--skews", "0.0", "-0.3", "0.3"])
-        == 0
-    )
+    assert main(["--json", *cms_arguments(long_curves), "--skews", "0.0", "-0.3", "0.3"]) == 0
     rows = json.loads(capsys.readouterr().out)["skew"]
     assert rows[0]["share_of_flat"] == pytest.approx(1.0, rel=1e-12)
     assert 0.85 < rows[1]["share_of_flat"] < 1.0
@@ -1392,10 +1458,7 @@ def test_cms_says_which_skews_have_no_answer(
 def test_cms_prices_the_strip_beside_the_single_fixing(
     long_curves: tuple[str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert (
-        main(["--json", *cms_arguments(long_curves), "--leg-maturity", "2034-01-15"])
-        == 0
-    )
+    assert main(["--json", *cms_arguments(long_curves), "--leg-maturity", "2034-01-15"]) == 0
     payload = json.loads(capsys.readouterr().out)
     leg = payload["leg"]
     assert leg["fixings"] == 12
@@ -1441,15 +1504,11 @@ def test_swaption_reports_the_annuity_the_rate_and_both_sensitivities(
     assert payload["annuity"] > 5.0
     assert payload["value"] > 0.0
     # Its own premium inverts back to the volatility it was priced at.
-    assert payload["implied_volatility_from_its_own_premium"] == pytest.approx(
-        0.20, rel=1e-9
-    )
+    assert payload["implied_volatility_from_its_own_premium"] == pytest.approx(0.20, rel=1e-9)
 
     shift = payload["discount_shift"]
     # The option moves two orders of magnitude more than the rate it is on.
-    assert abs(shift["relative_change_in_value"]) > 100.0 * abs(
-        shift["relative_change_in_forward"]
-    )
+    assert abs(shift["relative_change_in_value"]) > 100.0 * abs(shift["relative_change_in_forward"])
     assert shift["relative_change_in_value"] < 0.0
     assert shift["relative_change_in_annuity"] < 0.0
 
@@ -1631,7 +1690,7 @@ def test_hullwhite_takes_the_receiver(
 
 
 def test_hullwhite_needs_exactly_one_of_a_volatility_and_a_premium(
-    long_curves: tuple[str, str]
+    long_curves: tuple[str, str],
 ) -> None:
     arguments = hullwhite_arguments(long_curves)
     both = [*arguments, "--premium", "0.03"]
@@ -1701,9 +1760,7 @@ def test_g2_prices_a_cap_and_reports_the_identities(
     assert payload["value"] > 0.0
     assert payload["instrument"] == "cap"
     # The strip sums to the cap, which is the only thing a cap is.
-    assert sum(one["value"] for one in payload["caplets"]) == pytest.approx(
-        payload["value"]
-    )
+    assert sum(one["value"] for one in payload["caplets"]) == pytest.approx(payload["value"])
     assert len(payload["caplets"]) == 18
     # phi exceeds the curve's own forward by the convexity term.
     shift = payload["short_rate_shift"]
@@ -1826,9 +1883,7 @@ def test_bermudan_prices_the_europeans_both_ways_on_request(
     assert main(["--json", *arguments]) == 0
     payload = json.loads(capsys.readouterr().out)
     decomposed = [one["european"] for one in payload["dates"]]
-    for one, other in zip(
-        decomposed, payload["europeans_by_quadrature"], strict=True
-    ):
+    for one, other in zip(decomposed, payload["europeans_by_quadrature"], strict=True):
         assert one == pytest.approx(other, rel=1e-10)
 
 
@@ -1859,3 +1914,128 @@ def test_bermudan_refuses_a_date_off_a_fixed_leg_boundary(
     arguments[arguments.index("2032-01-15")] = "2032-03-15"
     assert main(arguments) == 2
     assert "not a fixed-leg period boundary" in capsys.readouterr().err
+
+
+# -- caplet stripping ---------------------------------------------------------
+
+CAP_QUOTES = """
+# a comment, and a blank line follow
+
+2027-01-15,0.18
+2028-01-15,0.20
+2029-01-15,0.22
+2030-01-15,0.24
+2031-01-15,0.26
+"""
+
+
+@pytest.fixture
+def cap_file(tmp_path: Path) -> str:
+    path = tmp_path / "caps.txt"
+    path.write_text(CAP_QUOTES)
+    return str(path)
+
+
+def caplet_arguments(ois_file: str, cap_file: str) -> list[str]:
+    return [
+        "caplets",
+        ois_file,
+        "--reference",
+        "2026-01-15",
+        "--basis",
+        "ACT_365F",
+        "--caps",
+        cap_file,
+        "--effective",
+        "2026-01-15",
+        "--strike",
+        "0.035",
+        "--basis-spread",
+        "0.0020",
+    ]
+
+
+def test_caplets_reprices_every_quote_it_was_given(
+    ois_file: str, cap_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The column is the only check on the bootstrap that goes through nothing else."""
+    assert main(["--json", *caplet_arguments(ois_file, cap_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["buckets"]) == 5
+    for bucket in payload["buckets"]:
+        assert bucket["repriced"] == pytest.approx(bucket["quoted"], rel=1e-13)
+    assert payload["worst_repricing_error"] < 1e-14
+
+
+def test_caplets_shows_the_stripped_curve_outrunning_the_quotes(
+    ois_file: str, cap_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *caplet_arguments(ois_file, cap_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["quoted_span"] == [0.18, 0.26]
+    low, high = payload["stripped_span"]
+    assert low == pytest.approx(0.18, rel=1e-12)
+    assert high > 0.30
+    overs = [bucket["over_quote"] for bucket in payload["buckets"]]
+    assert overs == sorted(overs)
+    assert overs[0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_caplets_reports_both_conditioning_columns(
+    ois_file: str, cap_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """They fail at opposite ends, so neither stands in for the other."""
+    assert main(["--json", *caplet_arguments(ois_file, cap_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    sensitivities = [bucket["sensitivity"] for bucket in payload["buckets"]]
+    assert sensitivities == sorted(sensitivities)
+    assert sensitivities[0] == pytest.approx(1.0, abs=1e-6)
+    assert sensitivities[-1] > 3.0
+    for bucket in payload["buckets"]:
+        assert bucket["indeterminacy"] < 1e-11
+
+
+def test_caplets_refuses_a_strike_deep_in_the_money(
+    ois_file: str, cap_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = caplet_arguments(ois_file, cap_file)
+    arguments[arguments.index("0.035")] = "0.004"
+    assert main(arguments) == 2
+    assert "does not identify" in capsys.readouterr().err
+
+
+def test_caplets_refuses_a_volatility_file_in_per_cent(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A file in the other unit parses perfectly and is wrong by a hundred."""
+    path = tmp_path / "percent.txt"
+    path.write_text("2027-01-15,18\n2028-01-15,20\n")
+    assert main(caplet_arguments(ois_file, str(path))) == 2
+    assert "0.26, not 26" in capsys.readouterr().err
+
+
+def test_caplets_names_a_bad_line_rather_than_raising_from_a_dataclass(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bad.txt"
+    path.write_text("2027-01-15,0.18\nnot-a-date,0.20\n")
+    assert main(caplet_arguments(ois_file, str(path))) == 2
+    assert "line 2" in capsys.readouterr().err
+
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# nothing but a comment\n")
+    assert main(caplet_arguments(ois_file, str(empty))) == 2
+    assert "no quotes in it" in capsys.readouterr().err
+
+
+def test_caplets_strips_floors_and_normal_volatilities(
+    ois_file: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "normal.txt"
+    path.write_text("2027-01-15,0.0060\n2028-01-15,0.0065\n2029-01-15,0.0070\n")
+    arguments = [*caplet_arguments(ois_file, str(path)), "--floor", "--normal"]
+    assert main(["--json", *arguments]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    for bucket in payload["buckets"]:
+        assert bucket["repriced"] == pytest.approx(bucket["quoted"], rel=1e-12)
+    assert payload["buckets"][0]["caplet"] == pytest.approx(0.0060, rel=1e-12)
