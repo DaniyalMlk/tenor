@@ -1614,6 +1614,84 @@ tenor bermudan ois.txt --reference 2026-01-15 --basis ACT_365F \
   --swap-maturity 2036-01-15 --mean-reversion 0.05 --volatility 0.01
 ```
 
+## Reading a quote convention back into a model input
+
+`Cap.value` takes one volatility for the whole strip, which is how a cap is
+*quoted* and not how anything is priced. `tenor.stripping` is the inverse: a
+bootstrap in maturity where each longer cap's new periods get one volatility
+from a root solve, while the earlier periods stay where previous steps put them.
+
+```bash
+tenor caplets ois.txt --reference 2026-01-15 --basis ACT_365F \
+    --caps caps.txt --effective 2026-01-15 --strike 0.035 --basis-spread 0.0020
+```
+
+```
+reference: 2026-01-15
+strike: 0.035
+buckets:
+  maturity=2027-01-15  periods=3  quoted=0.18  repriced=0.18  caplet=0.18        sensitivity=1.000  indeterminacy=9.6e-14
+  maturity=2028-01-15  periods=4  quoted=0.20  repriced=0.20  caplet=0.2075780   sensitivity=1.385  indeterminacy=2.5e-13
+  maturity=2029-01-15  periods=4  quoted=0.22  repriced=0.22  caplet=0.2419188   sensitivity=2.095  indeterminacy=5.3e-13
+  maturity=2030-01-15  periods=4  quoted=0.24  repriced=0.24  caplet=0.2764117   sensitivity=2.830  indeterminacy=8.1e-13
+  maturity=2031-01-15  periods=4  quoted=0.26  repriced=0.26  caplet=0.3120089   sensitivity=3.631  indeterminacy=1.1e-12
+worst_repricing_error: 1.942890293e-16
+```
+
+The repriced column is the only check on the bootstrap that does not go through
+another approximation, and it costs one solve per quote. The other two columns
+are the reason this command exists.
+
+### The stripped curve outruns the quotes
+
+A flat volatility is a premium-weighted average of the caplet volatilities under
+it, not an average of the volatilities themselves, so a rising quote curve needs
+a caplet curve that rises faster. Quotes of 18% to 26% strip to 18.0% to
+**31.2%**: the far bucket sits 5.2 volatility points above the quote that set it,
+and the slope between the last two buckets is 1.77 times the slope between the
+last two quotes. The first bucket's volatility is its quote exactly — a
+one-bucket strip has nothing to average — which is the one row that can be
+checked by hand.
+
+A hump is worse than a slope. Quotes of 18, 26, 30, 26 and 22 per cent strip to
+18.0, 29.3, **34.5**, 18.6 and 11.5, so a four-point fall in the quotes is a
+sixteen-point fall in the buckets: the later periods have to undo an average the
+earlier ones are holding up.
+
+### Monotone is not steep, and that is the trap at both ends
+
+The premium rises with the volatility everywhere, so a bracket on `[0, ceiling]`
+always contains a root and a solver always returns something.
+
+At the far maturities it returns something badly conditioned, which the
+sensitivity column reports: a basis point on the one-year quote moves its bucket
+by 1.00 basis points, and a basis point on the five-year quote moves the last
+bucket by **3.63**, because each bucket is a smaller share of its cap's premium
+than the last.
+
+Deep in the money it returns nonsense, which is what the indeterminacy column
+is for. An option eleven standard deviations into the money is worth its
+intrinsic value to *the same double*, so every volatility explains the quote
+equally well; a bucket whose repricing set is wider than one basis point of
+volatility is refused as unidentified rather than reported. Measured at an 18%
+quote against forwards of 3.23% to 3.39%, the answer is pinned to 1.2e-13 at a
+strike of 3.5%, 1.3e-09 at 2%, 6.2e-06 at 1.5%, and the lowest strike the quote
+says anything about at all is **1.3901%**.
+
+That guard is also what stops a falling quote curve, which was the surprise.
+Holding the one-year quote at 18% and walking the two-year quote down, the strip
+survives a fall of **1202 basis points** and not 1203 — and at the last quote it
+accepts, the bucket's indeterminacy has reached 9.9989e-05 against the 1.0e-04
+limit, with the premium unattainable one step below. The two refusals coincide
+because they are one statement measured two ways. The usual worry about a
+sequential volatility bootstrap is a negative variance, and that is not what
+binds.
+
+The least obvious consequence: **a zero quote identifies a zero volatility only
+exactly at the money.** Vega vanishes with the volatility away from the strike,
+so an interval of volatilities all produce the intrinsic value. At the money the
+premium is linear in the volatility and zero is pinned to 2.8e-16.
+
 ## Development
 
 ```bash
