@@ -896,3 +896,97 @@ payoffs are the positive and negative parts of one number. Two Bermudans are
 maxima over different stopping rules, and a difference of maxima is not the
 maximum of a difference: measured at 0.00212 against a swap worth 0.00136, so
 treating it as a check would report a 56% pricing error on correct prices.
+
+## Phase 19 — Reading a quote convention back into a model input
+
+- [x] A cap quote type carrying a maturity and a flat volatility, with the
+      strike on the call rather than on the quote
+- [x] A bucket type carrying the periods one quote added and the volatility
+      that explains them
+- [x] A piecewise-constant caplet volatility curve, looked up by fixing date
+      and flat outside the quoted range
+- [x] The bootstrap in maturity, one monotone root solve per step
+- [x] Schedules checked to nest, since `generate` runs backward from maturity
+- [x] Every quote repriced from the stripped curve, as the only check that goes
+      through nothing else
+- [x] A flat volatility recovered back out of a caplet curve, and a flat curve
+      shown to quote flat at every maturity
+- [x] The sensitivity of each bucket to the quote that set it, reported
+- [x] The width of the set of volatilities that reprice each cap, reported, and
+      a bucket wider than a basis point of volatility refused
+- [x] The steepening between quoted and stripped curves measured
+- [x] The feasibility boundary measured rather than assumed to be about
+      negative variance
+- [x] Monotonicity recorded as a measurement, not asserted as a property
+- [x] A command-line entry point printing the curve beside both conditioning
+      columns
+
+`Cap.value` takes one volatility for the whole strip, which is how a cap is
+*quoted* and not how anything is priced. A quoted flat volatility is the single
+number reproducing a cap's premium; what prices anything else is the volatility
+of each forward underneath. This phase is the inverse, and it is a bootstrap in
+maturity: the shortest cap's periods come from its own quote, and each longer
+cap's new periods get one volatility from a root solve while the earlier ones
+stay where previous steps put them.
+
+Three things that are not the loop. The schedules have to nest, and
+`schedule.generate` runs backward from maturity, so a shorter cap's periods are
+a prefix of a longer one's only when every maturity sits on the index's own roll
+grid from the shared effective date — checked against the realised schedules and
+refused by name. The strike lives on the call rather than on the quote, because
+volatilities at two strikes are not the same quantity and a set of
+at-the-money caps struck at their own par rates is not a term structure of one
+thing. And each bucket reports its own conditioning, because this problem is
+ill-posed in a way that a single number hides.
+
+### The stripped curve outruns the quotes, and by a lot
+
+A flat volatility is a premium-weighted average of the caplet volatilities under
+it, not an average of the volatilities themselves, so a rising quote curve has to
+be explained by a caplet curve that rises faster. On a five-year quarterly
+structure with quotes running 18% to 26%, the buckets run 18.0% to **31.2%**: the
+far bucket sits 5.2 volatility points above the quote that set it and the slope
+between the last two buckets is 1.77 times the slope between the last two quotes.
+The first bucket's volatility is its quote exactly, because a one-bucket strip
+has nothing to average — the one row of the table that can be checked by hand.
+
+A hump is worse than a slope. Quotes of 18, 26, 30, 26 and 22 per cent strip to
+18.0, 29.3, **34.5**, 18.6 and 11.5, so a four-point fall in the quotes is a
+sixteen-point fall in the buckets: the later periods have to undo an average the
+earlier ones are holding up. Monotone quotes give monotone buckets on this
+structure and nothing guarantees it, which is why the tests record the
+measurement rather than the expectation.
+
+### Monotone is not steep, and that is the trap at both ends
+
+The premium rises with the volatility everywhere, so a bracket on `[0, ceiling]`
+always contains a root and a solver always returns something. At the far
+maturities it returns something badly conditioned: a basis point on the one-year
+quote moves its bucket by 1.00 basis points and a basis point on the five-year
+quote moves the last bucket by **3.63**, because each bucket is a smaller share
+of its cap's premium than the last.
+
+Deep in the money it returns nonsense. An option eleven standard deviations into
+the money is worth its intrinsic value to *the same double*, so every volatility
+explains the quote equally well. Each bucket therefore carries the width of the
+set of volatilities repricing its cap to within the premium tolerance, and a
+bucket wider than one basis point of volatility is refused as unidentified rather
+than reported. Measured at an 18% quote against forwards of 3.23% to 3.39%: the
+answer is pinned to 1.2e-13 at a strike of 3.5%, 1.3e-09 at 2%, 6.2e-06 at 1.5%,
+and the lowest strike the quote says anything about at all is **1.3901%**.
+
+That guard also turns out to be what stops a falling quote curve. Holding the
+one-year quote at 18% and walking the two-year quote down, the strip survives a
+fall of **1202 basis points** and not 1203 — and at the last quote it accepts,
+the bucket's indeterminacy has reached 9.9989e-05 against the 1.0e-04 limit, with
+the premium unattainable one step below. The two refusals coincide because they
+are one statement measured two ways: the premium has stopped responding to the
+volatility. The usual worry about a sequential volatility bootstrap is a negative
+variance, and that is not what binds here.
+
+The last consequence is the least obvious. **A zero quote identifies a zero
+volatility only exactly at the money.** Vega vanishes with the volatility away
+from the strike — both `d1` and `d2` run off to infinity and take the density
+with them — so an interval of volatilities all produce the intrinsic value. At
+the money the premium is linear in the volatility with a slope near
+`0.4 F sqrt(T)`, and zero is pinned to 2.8e-16.
