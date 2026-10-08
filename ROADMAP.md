@@ -978,7 +978,7 @@ and the lowest strike the quote says anything about at all is **1.3901%**.
 That guard also turns out to be what stops a falling quote curve. Holding the
 one-year quote at 18% and walking the two-year quote down, the strip survives a
 fall of **1202 basis points** and not 1203 — and at the last quote it accepts,
-the bucket's indeterminacy has reached 9.9989e-05 against the 1.0e-04 limit, with
+the bucket's indeterminacy has come within 0.3% of the 1.0e-04 limit, with
 the premium unattainable one step below. The two refusals coincide because they
 are one statement measured two ways: the premium has stopped responding to the
 volatility. The usual worry about a sequential volatility bootstrap is a negative

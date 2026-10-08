@@ -382,8 +382,8 @@ def test_the_boundary_is_where_the_premium_stops_responding(
     """Not where a variance would go negative, which is the usual worry.
 
     At the last quote the strip accepts, the bucket is still a positive 0.23%
-    and its indeterminacy has risen to 9.9989e-05 against a limit of 1.0e-04 --
-    so identification is what binds. One step below, the premium is also
+    and its indeterminacy has risen to within 0.3% of the 1.0e-04 limit -- so
+    identification is what binds. One step below, the premium is also
     unattainable, and the two coincide rather than happening to be close: both
     say the premium has stopped responding to the volatility, one measured as a
     gap against the intrinsic value and the other as a width in the answer.
@@ -413,7 +413,11 @@ def test_the_boundary_is_where_the_premium_stops_responding(
     bucket = strip_pair(high).buckets[1]
     assert 0.0 < bucket.volatility < 0.005
     assert bucket.volatility == pytest.approx(0.00231, rel=0.05)
-    assert bucket.indeterminacy == pytest.approx(INDETERMINACY_LIMIT, rel=1e-3)
+    # Just under the limit, which is the claim. Where exactly a fifty-step
+    # bisection stops depends on the interpreter's rounding -- 9.974e-05 on
+    # 3.13 against 9.999e-05 on 3.11 -- so the assertion is the band and not
+    # the digit.
+    assert 0.99 * INDETERMINACY_LIMIT < bucket.indeterminacy < INDETERMINACY_LIMIT
     assert bucket.indeterminacy < INDETERMINACY_LIMIT
     assert 0.18 - high == pytest.approx(0.1202, abs=2e-4)
     assert strip_pair(high).buckets[0].volatility == pytest.approx(0.18, rel=1e-13)

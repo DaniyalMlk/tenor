@@ -95,7 +95,7 @@ at five:
   about at all is **1.3901%**, about eleven standard deviations in the money,
   where the premium and the intrinsic value are the same double. The same guard
   is what stops the falling quote above: at the last quote the strip accepts,
-  the indeterminacy has reached 9.9989e-05 against the 1.0e-04 limit, and one
+  the indeterminacy has come within 0.3% of the 1.0e-04 limit, and one
   step below the premium is unattainable as well. The two are the same
   statement measured two ways.
 
