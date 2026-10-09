@@ -1692,11 +1692,115 @@ exactly at the money.** Vega vanishes with the volatility away from the strike,
 so an interval of volatilities all produce the intrinsic value. At the money the
 premium is linear in the volatility and zero is pinned to 2.8e-16.
 
+## Four quantities, one identity, and the residual the market quotes anyway
+
+Everything above prices in a single currency. A foreign exchange forward is not
+a model: borrow domestic, buy foreign spot, lend foreign, sell the proceeds
+forward, and the four prices have to multiply to one. So `F = S D_f / D_d`, and
+the currency with the higher rate has the smaller discount factor and therefore
+trades at a forward *discount* — a high interest rate is not a reason to expect
+appreciation, it is the reason the forward is below the spot.
+
+Which means two curves, a spot and a strip of forwards over-determine the
+system. `tenor.fx` computes any of the four from the others, and when all four
+are given it names what is left over: the cross-currency basis.
+
+```bash
+tenor fx usd.txt --reference 2026-01-15 --basis ACT_365F \
+    --foreign-quotes eur.txt --spot 1.10 --spot-date 2026-01-19 \
+    --forward 2027-01-15:1.1172 2031-01-15:1.1932
+```
+
+```
+spot: 1.1
+spot_date: 2026-01-19
+forwards:
+  date=2027-01-15  outright=1.116132299  points=161.3229935  lag_pips=1.84309719
+  date=2031-01-15  outright=1.183841302  points=838.4130218  lag_pips=1.95490676
+basis:
+  date=2027-01-15  time=1               basis_bp=-9.561503525
+  date=2031-01-15  time=5.002739726     basis_bp=-15.73993838
+par_spread_bp: -15.58936815
+par_spread_accrual: ACT/360
+periods: 20
+```
+
+The implied curve is built by inversion, not by bootstrapping. A swap bootstrap
+solves each pillar because a swap's value depends on every pillar before it; a
+forward's does not, so each pillar here is one division. There is no solver, no
+iteration count and no way to fail to converge — and the round trip from a
+forward to a discount factor and back returns the same float, not a close one.
+
+### The lag column is the point of printing it
+
+A foreign exchange spot trade settles two business days out, so parity runs
+between the spot date and the forward date and both discount factors have to be
+taken relative to the spot date. Skipping it leaves the forward still looking
+like a forward.
+
+What makes that dangerous is that the error barely moves with tenor: on the
+example above it is 1.82 pips at three months, 1.84 at one year and 1.95 at
+five. Against the forward points that is **4.7% at three months**, 1.1% at one
+year and 0.23% at five. The convention matters most exactly where the forward is
+cheapest and most actively quoted, and it is invisible at the long end where
+somebody checking the code would look first.
+
+The same lag is the one thing a strip of forwards cannot determine. Parity fixes
+the *ratio* of foreign discount factors from the spot date, not their level, so
+building a curve from today needs the foreign discount factor to the spot date
+from elsewhere. Defaulting it to the domestic one — the two currencies
+discounting alike over two days — costs **1.47 basis points of implied basis at
+one year** and 0.29 at five, because the error enters divided by the maturity.
+So it is an argument, with the cost of its default measured rather than waved
+at.
+
+### The par spread comes out of a telescoping identity
+
+A floating leg projected and discounted on the same curve, with notional
+received at the start and repaid at maturity, is worth exactly nothing: each
+coupon is the difference of two neighbouring discount factors and the sum
+collapses onto the two ends. A cross-currency leg breaks that by projecting on
+one curve and discounting on another, and the spread that restores it is the
+leftover divided by the annuity. One expression, no bracket, no iteration — and
+between a curve and itself the numerator telescopes to 1e-16, which is the
+identity rather than a tolerance.
+
+### It is a spread on an accrual, and two corrections pull opposite ways
+
+Against a flat continuously compounded basis of 25 basis points, a five-year
+quarterly leg accruing on ACT/365F pays 25.196 — **+0.785%**, the whole of the
+compounding effect, since a spread paid quarterly is worth more than the same
+number compounded continuously. Move the accrual to ACT/360, which is what a
+dollar leg uses, and the accruals grow by 365/360 so the spread shrinks by
+1.37%: 24.851, or **-0.595%**. The net is smaller than either part, and quoting
+it alone would leave a reader thinking the correction had one sign.
+
+The gap is close to proportional in the basis — -0.0614bp at 10, -0.1488 at 25,
+-0.5020 at 100 — which is how a convention is told from an approximation.
+
+### A term structure is averaged over the forward basis, not the zero basis
+
+With a zero basis rising linearly from 10 to 40 basis points over five years,
+the forward basis is twice as steep at the long end: differentiating `b(t) t`
+adds `t b'(t)`, so it reaches 70. The par spread is the annuity-weighted average
+of *that*, and comes out at **39.02 basis points**. A reader who averages the
+zero basis over time gets 25, understating by 36%; one who reads its short end
+gets 11.5, understating by 70%. That is the reason the function exists rather
+than a subtraction of two zero rates.
+
+### One failure needed a message of its own
+
+The last forward's date is the swap's maturity, and a maturity on a weekend
+rolls forward — so the final payment lands a day or two past the pillar that
+forward itself created, where both curves have nothing. Shortening the swap by a
+day would price a different trade under the right name, so the command names
+both dates and stops.
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 1475 tests
+pytest          # 1535 tests
 mypy --strict
 ruff check .
 ```
