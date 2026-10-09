@@ -990,3 +990,57 @@ from the strike — both `d1` and `d2` run off to infinity and take the density
 with them — so an interval of volatilities all produce the intrinsic value. At
 the money the premium is linear in the volatility with a slope near
 `0.4 F sqrt(T)`, and zero is pinned to 2.8e-16.
+
+## Phase 20 — Two currencies, and the quantity that is left over
+
+- [x] Covered interest parity in both directions, with the round trip returning
+      the same float rather than a close one
+- [x] The spot settlement lag carried explicitly, since parity runs from the
+      spot date and not from today
+- [x] Forward points, in the pip of the quote currency, with the pip named
+      rather than assumed
+- [x] The foreign discount curve a strip of forwards implies, built by
+      inversion because a forward depends on one pillar and not on every pillar
+      before it
+- [x] The one quantity the strip cannot determine — the foreign discount factor
+      to the spot date — made an argument, with the cost of its default measured
+- [x] The basis term structure between the implied curve and the foreign
+      currency's own
+- [x] The par spread on a constant-notional cross-currency leg, from the
+      telescoping of the notional exchange rather than from a valuation solve
+- [x] The accrual convention and the compounding correction measured
+      separately, because they pull opposite ways and the net hides both
+- [x] A command-line entry point whose lag column is printed to be looked at
+
+A foreign exchange forward is an identity rather than a model, which makes this
+the only module here whose checks can be assertions on equality. It is also the
+first place in the library where the market quotes more than the mathematics
+determines: two curves, a spot and a strip of forwards are four quantities with
+one relation between them, so something has to give, and what gives is the
+assumption that a currency has one discount curve.
+
+### The convention nobody can see is the one that costs
+
+The spot lag is two business days and the error from ignoring it is the rate
+differential over those days applied to the spot — so it hardly changes with
+maturity while the forward points grow with it. Under a quarter of a per cent of
+a five-year forward's points and nearly five per cent of a three-month one's,
+which is the wrong way round for noticing. The same two days are what a strip of
+forwards cannot pin down, and defaulting them to the domestic curve moves the
+implied one-year basis by 1.47 basis points.
+
+### A spread on an accrual is not a continuously compounded rate
+
+Two corrections separate them and they have opposite signs: quarterly payment
+against continuous compounding is worth +0.785%, and an ACT/360 accrual against
+an ACT/365F curve is worth -1.37%. The net, -0.595%, is smaller than either, so
+reporting only the net would suggest the correction has one direction. The gap
+is proportional to the basis rather than quadratic in it, which is the signature
+of a convention rather than an approximation.
+
+### And a basis curve is averaged the way an annuity averages
+
+The par spread is the annuity-weighted average of the *forward* basis. With a
+zero basis rising from 10 to 40 basis points the forward basis reaches 70, and
+the spread is 39.02 — against 25 for a time average of the zero basis and 11.5
+for its short end.
