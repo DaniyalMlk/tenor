@@ -2039,3 +2039,173 @@ def test_caplets_strips_floors_and_normal_volatilities(
     for bucket in payload["buckets"]:
         assert bucket["repriced"] == pytest.approx(bucket["quoted"], rel=1e-12)
     assert payload["buckets"][0]["caplet"] == pytest.approx(0.0060, rel=1e-12)
+
+
+# -- fx -----------------------------------------------------------------------
+
+FOREIGN_QUOTES = """
+deposit  2021-07-05  0.0005  ACT_360
+swap     2023-01-05  0.0030  SEMI_ANNUAL  THIRTY_360_BOND
+swap     2031-01-05  0.0120  SEMI_ANNUAL  THIRTY_360_BOND
+"""
+
+
+@pytest.fixture
+def foreign_quote_file(tmp_path: Path) -> str:
+    path = tmp_path / "foreign.txt"
+    path.write_text(FOREIGN_QUOTES)
+    return str(path)
+
+
+def fx_argv(quote_file: str, foreign_quote_file: str, *extra: str) -> list[str]:
+    return [
+        "--json",
+        "fx",
+        *shared(quote_file),
+        "--foreign-quotes",
+        foreign_quote_file,
+        "--spot",
+        "1.10",
+        "--spot-date",
+        "2021-01-07",
+        *extra,
+    ]
+
+
+def test_the_fx_command_prices_a_strip_from_parity(
+    quote_file: str, foreign_quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The domestic curve is above the foreign one, so the forwards rise.
+
+    And the lag column barely changes down the strip, which is the report's
+    reason for printing it: the same absolute error is negligible at ten years
+    and material at six months.
+    """
+    assert (
+        main(
+            fx_argv(
+                quote_file,
+                foreign_quote_file,
+                "--tenor",
+                "2021-07-05",
+                "2023-01-05",
+                "2031-01-05",
+            )
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    rows = payload["forwards"]
+    assert len(rows) == 3
+    assert [row["date"] for row in rows] == ["2021-07-05", "2023-01-05", "2031-01-05"]
+    assert all(row["outright"] > 1.10 for row in rows)
+    assert [row["points"] for row in rows] == sorted(row["points"] for row in rows)
+    lags = [abs(row["lag_pips"]) for row in rows]
+    assert max(lags) / min(lags) < 2.0
+    shares = [abs(row["lag_pips"]) / row["points"] for row in rows]
+    assert shares == sorted(shares, reverse=True)
+
+
+def test_the_fx_command_inverts_observed_forwards_into_a_basis(
+    quote_file: str, foreign_quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Observed outrights over-determine parity, and the residual is the basis.
+
+    The forwards here are the parity ones scaled *down*, so a unit of the
+    foreign currency buys less of the domestic one forward than the two curves
+    say it should. That makes the forward-implied foreign discount factors
+    smaller than the foreign curve's own — borrowing the foreign currency
+    synthetically through the FX market is dearer than borrowing it directly —
+    which is a positive spread under this module's convention.
+    """
+    assert (
+        main(
+            fx_argv(
+                quote_file,
+                foreign_quote_file,
+                "--tenor",
+                "2023-01-05",
+                "2030-07-05",
+            )
+        )
+        == 0
+    )
+    parity = {
+        row["date"]: row["outright"] for row in json.loads(capsys.readouterr().out)["forwards"]
+    }
+    assert (
+        main(
+            fx_argv(
+                quote_file,
+                foreign_quote_file,
+                "--forward",
+                f"2023-01-05:{parity['2023-01-05'] * 0.999:.10f}",
+                f"2030-07-05:{parity['2030-07-05'] * 0.995:.10f}",
+            )
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert [point["date"] for point in payload["basis"]] == [
+        "2023-01-05",
+        "2030-07-05",
+    ]
+    assert all(point["basis_bp"] > 0.0 for point in payload["basis"])
+    assert payload["par_spread_accrual"] == "ACT/360"
+    assert payload["periods"] > 30
+    # The spread is a spread on an accrual and the basis is a continuously
+    # compounded rate, so they are near each other and not equal.
+    far = payload["basis"][-1]["basis_bp"]
+    assert payload["par_spread_bp"] > 0.0
+    assert abs(payload["par_spread_bp"] / far - 1.0) < 0.6
+
+
+def test_the_accrual_basis_moves_the_par_spread(
+    quote_file: str, foreign_quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spreads = []
+    for accrual in ("ACT_360", "ACT_365F"):
+        assert (
+            main(
+                fx_argv(
+                    quote_file,
+                    foreign_quote_file,
+                    "--forward",
+                    "2030-07-05:1.3",
+                    "--accrual-basis",
+                    accrual,
+                )
+            )
+            == 0
+        )
+        spreads.append(json.loads(capsys.readouterr().out)["par_spread_bp"])
+    # ACT/360 accruals are 365/360 larger, so the spread on them is smaller in
+    # absolute terms by that ratio.
+    assert abs(spreads[0]) < abs(spreads[1])
+    assert spreads[0] == pytest.approx(spreads[1] * 360.0 / 365.0, rel=1e-3)
+
+
+def test_the_fx_command_refuses_a_malformed_forward(
+    quote_file: str, foreign_quote_file: str
+) -> None:
+    assert (
+        main(fx_argv(quote_file, foreign_quote_file, "--forward", "2031-01-05")) == 2
+    )
+    assert main(fx_argv(quote_file, foreign_quote_file)) == 2
+
+
+def test_a_last_forward_whose_roll_leaves_the_curve_is_explained(
+    quote_file: str, foreign_quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2031-01-05 is a Sunday, so the swap's last payment is 2031-01-06.
+
+    The forward itself creates the curve's last pillar on the 5th, and the
+    rolling convention then asks for a discount factor on the 6th. Quietly
+    shortening the swap by a day would price a different trade under the right
+    name, so the command says what happened and names both dates.
+    """
+    assert (
+        main(fx_argv(quote_file, foreign_quote_file, "--forward", "2031-01-05:1.3"))
+        == 2
+    )
+    assert "2031-01-06" in capsys.readouterr().err

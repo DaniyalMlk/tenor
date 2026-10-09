@@ -43,7 +43,7 @@ from . import __version__
 from .bermudan import BermudanSwaption, bermudan_swaption, coterminal_europeans
 from .bond import Accrual, Bond
 from .bootstrap import Bootstrapped, bootstrap
-from .calendar import WEEKENDS_ONLY
+from .calendar import WEEKENDS_ONLY, Rolling
 from .cms import (
     BadConvexity,
     ConstantMaturity,
@@ -58,7 +58,7 @@ from .credit import (
     risky_bond_price,
     triangle_hazard,
 )
-from .curve import Interpolation
+from .curve import Interpolation, OffCurve
 from .daycount import Basis, year_fraction
 from .floating import FloatingNote
 from .futures import (
@@ -67,6 +67,14 @@ from .futures import (
     BondFuture,
     cheapest_to_deliver,
     delivery_switch,
+)
+from .fx import (
+    FxForward,
+    basis_curve,
+    forward_outright,
+    forward_points,
+    implied_curve,
+    par_basis_spread,
 )
 from .g2 import (
     G2,
@@ -1443,6 +1451,121 @@ def run_hullwhite(arguments: argparse.Namespace) -> dict[str, object]:
                 convention=Convention.LOGNORMAL,
             ),
         }
+    return payload
+
+
+def run_fx(arguments: argparse.Namespace) -> dict[str, object]:
+    """Covered interest parity, and whichever of its four quantities is left over.
+
+    With two curves and a spot the forwards are determined, so the report is a
+    strip of outrights and their points. Give it observed forwards instead and
+    the system is over-determined: the report then inverts them into the foreign
+    discount curve they imply and prints the basis against the curve built from
+    the foreign quotes, which is the residual nobody can make vanish.
+
+    Two numbers in the output exist to be looked at rather than used. The
+    ``lag_pips`` column is what ignoring the two-day spot settlement would cost
+    on each tenor, and it barely changes down the column — which is why it is a
+    rounding error on a five-year forward and several per cent of a three-month
+    one. And ``par_spread`` is a spread paid on an accrual, not a continuously
+    compounded basis: the two differ by the day count and the compounding, which
+    pull opposite ways, so the basis column and the spread are not the same
+    quantity and the report does not pretend otherwise.
+    """
+    domestic = build(arguments).curve
+    foreign_arguments = argparse.Namespace(
+        quotes=arguments.foreign_quotes,
+        reference=arguments.reference,
+        basis=arguments.basis,
+        interpolation=arguments.interpolation,
+    )
+    foreign = build(foreign_arguments).curve
+    spot_day = (
+        date.fromisoformat(arguments.spot_date)
+        if arguments.spot_date is not None
+        else domestic.reference
+    )
+
+    observed: list[FxForward] = []
+    for entry in arguments.forward or ():
+        head, _, tail = entry.partition(":")
+        if not tail:
+            raise ValueError(
+                f"a forward is given as DATE:OUTRIGHT, got {entry!r}"
+            )
+        observed.append(FxForward(date.fromisoformat(head), float(tail)))
+    tenors = [date.fromisoformat(one) for one in arguments.tenor or ()]
+    if not tenors:
+        tenors = [quote.day for quote in observed]
+    if not tenors:
+        raise ValueError("give --tenor or --forward, or there is nothing to price")
+
+    rows: list[dict[str, object]] = []
+    for day in sorted(tenors):
+        outright = forward_outright(
+            arguments.spot, domestic, foreign, day, spot_day=spot_day
+        )
+        careless = forward_outright(arguments.spot, domestic, foreign, day)
+        row: dict[str, object] = {
+            "date": day,
+            "outright": outright,
+            "points": forward_points(arguments.spot, outright),
+            "lag_pips": forward_points(arguments.spot, careless)
+            - forward_points(arguments.spot, outright),
+        }
+        rows.append(row)
+
+    payload: dict[str, object] = {
+        "spot": arguments.spot,
+        "spot_date": spot_day,
+        "forwards": rows,
+    }
+
+    if observed:
+        implied = implied_curve(
+            arguments.spot,
+            observed,
+            domestic,
+            spot_day=spot_day,
+            foreign_spot=foreign.discount(spot_day),
+        )
+        payload["basis"] = [
+            {
+                "date": point.day,
+                "time": point.time,
+                "basis_bp": point.spread * 1e4,
+            }
+            for point in basis_curve(
+                implied, foreign, sorted(quote.day for quote in observed)
+            )
+        ]
+        last = max(quote.day for quote in observed)
+        schedule = generate(
+            spot_day,
+            last,
+            Frequency[arguments.swap_frequency.upper()],
+            calendar=WEEKENDS_ONLY,
+            rolling=Rolling.MODIFIED_FOLLOWING,
+        )
+        accrual = _basis(arguments.accrual_basis)
+        try:
+            spread = par_basis_spread(schedule, foreign, implied, basis=accrual)
+        except OffCurve as beyond:
+            # The last forward's date is a maturity, and a maturity on a weekend
+            # rolls forward -- so the schedule's final payment can land a day or
+            # two past the pillar the forward itself created. The curves have
+            # nothing there and saying so is better than quietly shortening the
+            # swap, which would be a different trade priced under the right
+            # name.
+            raise ValueError(
+                f"the swap's last payment falls on "
+                f"{schedule[-1].payment.isoformat()}, which the rolling "
+                f"convention moved past the last forward at "
+                f"{last.isoformat()}: {beyond}"
+            ) from beyond
+        payload["par_spread_bp"] = spread * 1e4
+        payload["par_spread_accrual"] = accrual.value
+        payload["periods"] = len(schedule)
     return payload
 
 
@@ -2894,6 +3017,67 @@ def parser() -> argparse.ArgumentParser:
         help="also price the Europeans by the integral instead of the decomposition",
     )
     bermudan.set_defaults(run=run_bermudan)
+
+    crosscurrency = subcommands.add_parser(
+        "fx",
+        help="covered interest parity, and the cross-currency basis left over",
+        description=(
+            "Prices a strip of foreign exchange forwards from two curves and a "
+            "spot, and -- given observed outrights instead -- inverts them into "
+            "the foreign discount curve they imply and prints the basis against "
+            "the foreign quotes' own curve. Parity has four quantities and the "
+            "market quotes all four, so the basis is a residual rather than a "
+            "data problem. The lag column is what ignoring the spot settlement "
+            "would cost: it hardly changes with tenor, so it is nothing on a "
+            "five-year forward and several per cent of a three-month one."
+        ),
+    )
+    shared(crosscurrency)
+    crosscurrency.add_argument(
+        "--foreign-quotes",
+        dest="foreign_quotes",
+        required=True,
+        help="a file of instrument quotes in the foreign currency",
+    )
+    crosscurrency.add_argument(
+        "--spot",
+        type=float,
+        required=True,
+        help="domestic currency per unit of foreign",
+    )
+    crosscurrency.add_argument(
+        "--spot-date",
+        dest="spot_date",
+        default=None,
+        help="settlement of the spot trade, ISO; the reference date if omitted",
+    )
+    crosscurrency.add_argument(
+        "--tenor",
+        nargs="+",
+        metavar="DATE",
+        help="forward settlement dates to price from parity, ISO",
+    )
+    crosscurrency.add_argument(
+        "--forward",
+        nargs="+",
+        metavar="DATE:OUTRIGHT",
+        help="observed outrights, which over-determine parity and imply a basis",
+    )
+    crosscurrency.add_argument(
+        "--swap-frequency",
+        dest="swap_frequency",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+        help="payment frequency of the basis swap the par spread is quoted on",
+    )
+    crosscurrency.add_argument(
+        "--accrual-basis",
+        dest="accrual_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+        help="day count the spread accrues on, which moves it by over a per cent",
+    )
+    crosscurrency.set_defaults(run=run_fx)
 
     return root
 
