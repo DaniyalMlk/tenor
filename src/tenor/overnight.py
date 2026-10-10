@@ -43,13 +43,23 @@ conventions exist because of the steps, and a model that smooths the steps away
 cannot be used to decide whether they matter.
 
 **Lookback and observation shift coincide exactly when the lag is a whole number
-of weeks, which is how the distinction gets missed.** On a weekends-only
-calendar a five-business-day lag is exactly seven calendar days, so every
-accrual day's own weight equals its shifted day's weight and the two conventions
-agree to the last bit — measured at both five and ten days. At two days a
-weekend crosses the window boundary, the weights stop matching, and the same
-curve gives -1.10bp for the lookback against -2.19bp for the shift: a factor of
-two from a convention difference that the usual lag choice conceals.
+of weeks, which is how the distinction gets missed.** The difference between
+them is entirely in the weights: a lookback keeps each accrual day's own, a
+shift takes the observation day's. On a weekends-only calendar a
+five-business-day lag is exactly seven calendar days, so **not one of the
+sixty-six days in the test period carries a different weight** and the two
+conventions agree to the last bit, at five days and at ten. At two, three and
+four days, 26 of the 66 do — a Friday's three days of weight landing on an
+accrual day two business days later — with the total preserved exactly, and the
+same curve then gives -1.10bp for the lookback against -2.19bp for the shift. A
+factor of two, from a redistribution that the usual lag choice conceals.
+
+At a one-day lag the total itself moves. The test period starts on a Monday and
+ends on a Tuesday, so the start shifts back three calendar days and the end only
+one; the shifted window is two days longer than the accrual, which remains the
+denominator. The convention is then paying the growth of a longer window over a
+shorter one, which is not a rounding story and is visible in
+:attr:`OvernightRate.weight` against :attr:`OvernightRate.accrual`.
 
 **A lockout is worth nothing unless the step is inside the locked window.** With
 the policy step in the middle of the period the lockout is worth 0.0000bp at
