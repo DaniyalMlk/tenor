@@ -1796,6 +1796,119 @@ forward itself created, where both curves have nothing. Shortening the swap by a
 day would price a different trade under the right name, so the command names
 both dates and stops.
 
+## A rate read every day, and the argument about which days
+
+A term floating leg fixes once per period. An overnight leg reads a rate every
+business day and compounds it over the accrual, which raises a question the term
+leg never has to answer: **which days?** The accrual's own are the obvious
+answer and nobody uses them unmodified, because the last fixing would be
+published on the payment date. So the window moves — a lookback, an observation
+shift, a lockout — and how it moves is a term of the trade.
+
+```python
+from tenor import Observation, OvernightIndex, compounded_rate, replication_factor
+
+start, end = date(2021, 3, 16), date(2021, 6, 16)
+plain = compounded_rate(curve, start, end)
+
+plain.rate                 # the compounded rate, over the accrual's own day count
+plain.days                 # 66 business days observed
+plain.weight               # their weights, summing to plain.accrual
+
+# Replicated by two zero-coupon bonds. Rounding on any curve, not a tolerance.
+plain.growth / replication_factor(curve, start, end, plain.index) - 1.0
+
+lagged = OvernightIndex(observation=Observation.LOOKBACK, days=5)
+compounded_rate(curve, start, end, lagged).rate - plain.rate    # the lag, as a rate
+replication_factor(curve, start, end, lagged)                   # refused: no such pair
+```
+
+### The plain case is an identity, not an approximation
+
+A projected overnight rate is `P(a)/P(b) - 1` over its day count, so each daily
+growth factor is a ratio of discount factors and the product telescopes to
+`P(start)/P(end)`. Compounded in arrears needs **no convexity adjustment of any
+kind** — and that is asserted at 4.4e-16 relative on a curve with a 50bp rate
+step inside the period, not to a chosen tolerance.
+
+An observation shift keeps the identity over the shifted window, to 6.7e-16. A
+lookback pairs one day's rate with another day's weight and a lockout repeats a
+factor, so neither telescopes at all. `replication_factor` refuses them rather
+than returning an approximation, because which conventions are replicable is a
+structural fact and not a question of how large a difference is.
+
+### A smooth curve hides the entire subject
+
+The size of a window convention is the curve's local slope times the lag. On a
+curve built by interpolating zero rates, a five-day lookback over three months
+is worth **0.000bp** and a two-day one 0.007bp: the conventions look like
+pedantry. Put a 50bp policy step in the overnight forward inside the period and
+the same five-day lookback is worth **-3.84bp**, a ten-day one -7.67bp. The
+conventions exist because of the steps.
+
+### Lookback and observation shift coincide at the lag everyone uses
+
+The difference between them is entirely in the weights. Five business days is
+exactly seven calendar days on a weekends-only calendar, so not one of the
+sixty-six days in the period carries a different weight and the two conventions
+agree bit for bit — at five days and at ten. At two, three and four days, 26 of
+the 66 do, with the total untouched, and the same curve gives -1.10bp for the
+lookback against **-2.19bp** for the shift. A factor of two, from a
+redistribution that the usual lag choice conceals. At one day the total itself
+moves, by two calendar days' worth.
+
+### A lockout is worth nothing unless the step is inside the locked window
+
+Exactly 0.0000bp at every lag with the step mid-period, because the frozen days
+all carried the same rate anyway. Move the period so the step falls five
+business days before its end and the same lockout is worth -4.46bp, identically
+at five and ten days. Quoting a lockout's effect without saying where the step
+is says nothing at all.
+
+### Compounding against averaging is `r^2 T / 2`
+
+An arithmetic average is a different contract, not a worse estimate of the same
+one, and the gap has a closed form: 1.33bp against 1.37bp predicted at three
+months, and 1.10bp, 2.76bp and 7.22bp at three, six and twelve months on the
+smooth curve. The closed form is high by 2.1% to 3.0% in all six measurements,
+always the same way — the third-order term it drops. The gap grows with the
+square of the tenor, which makes an averaged leg quoted against a compounded one
+a level-dependent basis rather than a spread.
+
+### At the level of a leg they compress, and one of them moves no rate at all
+
+```console
+$ tenor overnight examples/ois.txt --reference 2026-01-15 --basis ACT_365F \
+    --start 2026-03-16 --end 2026-06-16 --maturity 2029-02-02
+...
+conventions:
+  convention=in arrears  rate=0.03009786979  basis_points_against_arrears=0  telescopes=True  replication_error=2.220446049e-16
+  convention=lookback 5d  rate=0.02997416464  basis_points_against_arrears=-1.237051526  telescopes=False
+  convention=observation shift 5d  rate=0.02997416464  basis_points_against_arrears=-1.237051526  telescopes=True  replication_error=2.220446049e-16
+  convention=payment lag 5d  rate=0.03009786979  basis_points_against_arrears=0  telescopes=True  replication_error=2.220446049e-16
+```
+
+On a three-year quarterly leg across a single 50bp step, only one period of
+twelve spans it, so the -3.84bp a five-day lookback is worth inside that period
+becomes -0.337bp as a spread — the same for the shift, -0.241bp for the lockout,
+-1.493bp for arithmetic averaging. A five-day **payment delay** is worth
+-0.236bp while changing every period's rate by exactly zero, which is the
+clearest demonstration available that it belongs in a different group from the
+other four.
+
+Which convention is worth most is a property of the curve rather than of the
+convention: on the bundled quote curve, steep and at 20 to 220 basis points, the
+window conventions dominate the averaging basis, and on a 3% curve with a step
+the averaging basis dominates them.
+
+### A lookback leg wants fixings from before its own effective date
+
+The first period's first observation is the lag's worth of business days before
+the accrual starts, so a leg traded on its effective date is asking for rates
+published before the trade existed. Refused rather than filled with the first
+projectable rate, which would be silently wrong by the whole move since the
+window opened.
+
 ## Development
 
 ```bash
