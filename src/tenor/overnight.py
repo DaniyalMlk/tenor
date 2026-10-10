@@ -143,7 +143,7 @@ class Averaging(str, Enum):
     ARITHMETIC = "arithmetic"
 
 
-class BadIndex(ValueError):
+class BadOvernight(ValueError):
     """The index's conventions do not describe a trade."""
 
 
@@ -173,29 +173,29 @@ class OvernightIndex:
 
     def __post_init__(self) -> None:
         if self.days < 0:
-            raise BadIndex(
+            raise BadOvernight(
                 f"{self.name} has a lag of {self.days!r} business days. A negative lag "
                 "would read a rate that has not been published."
             )
         if self.days > MAX_LAG:
-            raise BadIndex(
+            raise BadOvernight(
                 f"{self.name} has a lag of {self.days!r} business days against a "
                 f"ceiling of {MAX_LAG}. Lags are quoted in business days, not calendar "
                 "days, and nothing traded reaches this."
             )
         if self.observation is Observation.IN_ARREARS and self.days != 0:
-            raise BadIndex(
+            raise BadOvernight(
                 f"{self.name} is in arrears and carries a lag of {self.days!r} days. In "
                 "arrears means the accrual days are the observation days; a lag needs "
                 "one of the other three conventions to say what it does."
             )
         if self.observation is not Observation.IN_ARREARS and self.days == 0:
-            raise BadIndex(
+            raise BadOvernight(
                 f"{self.name} is {self.observation.value} with a lag of zero, which is "
                 "in arrears under another name. Give the lag, or say in arrears."
             )
         if self.payment_lag < 0:
-            raise BadIndex(
+            raise BadOvernight(
                 f"{self.name} has a payment lag of {self.payment_lag!r} days, which "
                 "would pay for a period before it has run."
             )
@@ -351,7 +351,7 @@ def observations(
 
     cut = len(accruals) - index.days
     if index.observation is Observation.LOCKOUT and cut < 1:
-        raise BadIndex(
+        raise BadOvernight(
             f"{index.name} locks out {index.days} of {len(accruals)} business days in "
             f"{start}..{end}, which leaves nothing observed. A lockout longer than the "
             "period is a schedule error, not a convention."
@@ -439,7 +439,7 @@ def replication_factor(
     no such pair exists, rather than returned as an approximation to them.
     """
     if not index.telescopes:
-        raise BadIndex(
+        raise BadOvernight(
             f"{index.name} does not telescope, so there is no pair of discount factors "
             "whose ratio is its growth. A lookback pairs one day's rate with another "
             "day's weight and a lockout repeats a factor; both are well defined and "
@@ -517,11 +517,11 @@ class OvernightLeg:
 
     def __post_init__(self) -> None:
         if self.maturity <= self.effective:
-            raise BadIndex(
+            raise BadOvernight(
                 f"a leg from {self.effective} to {self.maturity} has no life in it"
             )
         if self.notional <= 0.0:
-            raise BadIndex(f"a notional of {self.notional!r} is not a trade")
+            raise BadOvernight(f"a notional of {self.notional!r} is not a trade")
 
     @property
     def schedule(self) -> Schedule:
@@ -624,7 +624,7 @@ def convention_margin(
     )
     annuity = leg.annuity(discount)
     if annuity == 0.0:
-        raise BadIndex("a leg with no annuity cannot express a convention as a spread")
+        raise BadOvernight("a leg with no annuity cannot express a convention as a spread")
     return difference / annuity
 
 
@@ -638,7 +638,7 @@ def equivalent_rates(
 ) -> tuple[OvernightRate, ...]:
     """The same period under several conventions, for printing side by side."""
     if not indices:
-        raise BadIndex("no conventions to compare")
+        raise BadOvernight("no conventions to compare")
     return tuple(
         compounded_rate(curve, start, end, index, fixings=fixings) for index in indices
     )
@@ -647,7 +647,7 @@ def equivalent_rates(
 __all__ = [
     "MAX_LAG",
     "Averaging",
-    "BadIndex",
+    "BadOvernight",
     "MissingFixing",
     "Observation",
     "Observed",
