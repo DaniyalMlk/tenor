@@ -130,6 +130,15 @@ from .options import (
     Swaption,
     implied_volatility,
 )
+from .overnight import (
+    Averaging,
+    Observation,
+    OvernightIndex,
+    OvernightLeg,
+    compounded_rate,
+    convention_margin,
+    replication_factor,
+)
 from .rates import Compounding
 from .risk import buckets_from, instrument_risk, key_rates, level, shape_duration
 from .schedule import Frequency, add_months, generate
@@ -1569,6 +1578,92 @@ def run_fx(arguments: argparse.Namespace) -> dict[str, object]:
     return payload
 
 
+def run_overnight(arguments: argparse.Namespace) -> dict[str, object]:
+    """One accrual period under every convention, and the same as a leg spread.
+
+    Two tables, and the second is the one worth reading. A single period across
+    a policy step shows the conventions at their largest; a whole leg shows what
+    survives once only one period in twelve spans the step, which is a factor of
+    ten smaller and is the number that gets quoted.
+    """
+    built = build(arguments)
+    curve = built.curve
+    start = date.fromisoformat(arguments.start)
+    end = date.fromisoformat(arguments.end)
+    basis = _basis(arguments.index_basis)
+    plain = OvernightIndex(basis=basis)
+    lag = arguments.lag
+    candidates: list[tuple[str, OvernightIndex]] = [("in arrears", plain)]
+    for observation in (Observation.LOOKBACK, Observation.SHIFT, Observation.LOCKOUT):
+        candidates.append(
+            (
+                f"{observation.value} {lag}d",
+                OvernightIndex(basis=basis, observation=observation, days=lag),
+            )
+        )
+    candidates.append(
+        ("arithmetic", OvernightIndex(basis=basis, averaging=Averaging.ARITHMETIC))
+    )
+    candidates.append(
+        (f"payment lag {lag}d", OvernightIndex(basis=basis, payment_lag=lag))
+    )
+
+    reference = compounded_rate(curve, start, end, plain)
+    rows = []
+    for label, index in candidates:
+        rate = compounded_rate(curve, start, end, index)
+        row: dict[str, object] = {
+            "convention": label,
+            "rate": rate.rate,
+            "basis_points_against_arrears": (rate.rate - reference.rate) * 1e4,
+            "telescopes": index.telescopes,
+            "observations": rate.days,
+            "weight_less_accrual": rate.weight - rate.accrual,
+        }
+        if index.telescopes:
+            factor = replication_factor(curve, start, end, index)
+            row["replication_error"] = abs(rate.growth / factor - 1.0)
+        rows.append(row)
+
+    payload: dict[str, object] = {
+        "reference": curve.reference.isoformat(),
+        "period": f"{start.isoformat()}..{end.isoformat()}",
+        "index_basis": basis.value,
+        "lag": lag,
+        "business_days": reference.days,
+        "accrual": reference.accrual,
+        "in_arrears": reference.rate,
+        "replicating_factor": replication_factor(curve, start, end, plain),
+        "conventions": rows,
+    }
+
+    if arguments.maturity is not None:
+        maturity = date.fromisoformat(arguments.maturity)
+        leg = OvernightLeg(
+            effective=start,
+            maturity=maturity,
+            index=plain,
+            frequency=Frequency[arguments.leg_frequency.upper()],
+        )
+        margins = []
+        for label, index in candidates[1:]:
+            margins.append(
+                {
+                    "convention": label,
+                    "basis_points": convention_margin(leg, index, curve) * 1e4,
+                }
+            )
+        payload["leg"] = {
+            "maturity": maturity.isoformat(),
+            "frequency": leg.frequency.name,
+            "periods": len(leg.schedule),
+            "value": leg.value(curve),
+            "annuity": leg.annuity(curve),
+            "margins": margins,
+        }
+    return payload
+
+
 def _report(payload: dict[str, object], as_json: bool) -> str:
     if as_json:
         return json.dumps(payload, indent=2, default=str)
@@ -2483,6 +2578,52 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     futures.set_defaults(run=run_futures)
+
+    overnight = subcommands.add_parser(
+        "overnight",
+        help="a compounded overnight rate under each of the window conventions",
+        description=(
+            "Compounds an overnight rate over one accrual period under every "
+            "convention in use, and reports each one against plain compounding "
+            "in arrears. The plain case is an identity -- the daily growth "
+            "factors are ratios of discount factors, so the product is "
+            "P(start)/P(end) and the leg is replicated by two zeros -- and the "
+            "replication error is printed so that is checkable rather than "
+            "asserted. An observation shift keeps the identity over a shifted "
+            "window; a lookback and a lockout cannot, and the table says which. "
+            "Give a maturity to see the same conventions as a spread on a whole "
+            "leg, which is where they compress by an order of magnitude."
+        ),
+    )
+    shared(overnight)
+    overnight.add_argument("--start", required=True, help="the accrual start, ISO")
+    overnight.add_argument("--end", required=True, help="the accrual end, ISO")
+    overnight.add_argument(
+        "--index-basis",
+        dest="index_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+        help="the overnight index's own day count",
+    )
+    overnight.add_argument(
+        "--lag",
+        type=int,
+        default=5,
+        help="business days of lookback, shift, lockout and payment delay",
+    )
+    overnight.add_argument(
+        "--maturity",
+        default=None,
+        help="also build a leg to this date and express each convention as a spread",
+    )
+    overnight.add_argument(
+        "--leg-frequency",
+        dest="leg_frequency",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+        help="payment frequency of that leg",
+    )
+    overnight.set_defaults(run=run_overnight)
 
     multicurve = subcommands.add_parser(
         "multicurve",

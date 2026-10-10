@@ -2209,3 +2209,103 @@ def test_a_last_forward_whose_roll_leaves_the_curve_is_explained(
         == 2
     )
     assert "2031-01-06" in capsys.readouterr().err
+
+
+def test_the_overnight_command_reports_the_replication_identity(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The identity is the point of the command, so it is in the payload.
+
+    Every convention that telescopes carries its replication error, and the two
+    that cannot carry no such field rather than a number that would read as an
+    approximation to one.
+    """
+    assert (
+        main(
+            [
+                "--json",
+                "overnight",
+                *shared(quote_file),
+                "--start",
+                "2021-03-16",
+                "--end",
+                "2021-06-16",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["business_days"] == 66
+    assert payload["lag"] == 5
+    by_name = {row["convention"]: row for row in payload["conventions"]}
+    assert by_name["in arrears"]["replication_error"] < 1e-14
+    assert by_name["observation shift 5d"]["replication_error"] < 1e-14
+    assert "replication_error" not in by_name["lookback 5d"]
+    assert "replication_error" not in by_name["arithmetic"]
+    assert by_name["in arrears"]["basis_points_against_arrears"] == 0.0
+    # A payment delay moves no rate at all, which is why it is in the table.
+    assert by_name["payment lag 5d"]["basis_points_against_arrears"] == 0.0
+    # Compounding beats averaging, always.
+    assert by_name["arithmetic"]["basis_points_against_arrears"] < 0.0
+
+
+def test_the_overnight_command_compresses_the_conventions_onto_a_leg(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "--json",
+                "overnight",
+                *shared(quote_file),
+                "--start",
+                "2021-03-16",
+                "--end",
+                "2021-06-16",
+                "--maturity",
+                "2024-03-16",
+                "--lag",
+                "2",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    leg = payload["leg"]
+    assert leg["periods"] == 12
+    assert leg["annuity"] > 0.0
+    margins = {row["convention"]: row["basis_points"] for row in leg["margins"]}
+    assert set(margins) == {
+        "lookback 2d",
+        "observation shift 2d",
+        "lockout 2d",
+        "arithmetic",
+        "payment lag 2d",
+    }
+    # Every convention is worth something negative here, and which of them is
+    # worth most depends on the curve rather than on the convention. The
+    # averaging basis is second order in the *level* and the window conventions
+    # are the slope times the lag, so on this curve -- 20bp to 220bp, steep and
+    # low -- the lookback dominates at -0.78bp against -0.36bp, which is the
+    # opposite of the ordering on the 3% curve with a policy step in
+    # tests/test_overnight.py. Asserting the ordering either way round without
+    # saying which curve produced it would be asserting nothing.
+    assert all(value < 0.0 for value in margins.values())
+    assert abs(margins["lookback 2d"]) > abs(margins["arithmetic"])
+
+
+def test_the_overnight_command_refuses_a_lag_with_no_trade_behind_it(
+    quote_file: str,
+) -> None:
+    arguments = [
+        "overnight",
+        *shared(quote_file),
+        "--start",
+        "2021-03-16",
+        "--end",
+        "2021-06-16",
+    ]
+    assert main([*arguments, "--lag", "30"]) == 2
+    assert main([*arguments, "--lag", "-1"]) == 2
+    backwards = ["--start", "2021-06-16", "--end", "2021-03-16"]
+    assert main(["overnight", *shared(quote_file), *backwards]) == 2

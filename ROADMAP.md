@@ -1044,3 +1044,105 @@ The par spread is the annuity-weighted average of the *forward* basis. With a
 zero basis rising from 10 to 40 basis points the forward basis reaches 70, and
 the spread is 39.02 — against 25 for a time average of the zero basis and 11.5
 for its short end.
+
+## Phase 21 — A rate observed every day, and where the window sits
+
+A floating leg here projects a term index: one fixing at the start of a period,
+over the period it pays for. Most of the market now pays an overnight index
+compounded over the accrual instead, and that raises a question a term leg never
+has to answer — which days is the rate read on? The accrual's own days are the
+obvious choice and nobody uses them unmodified, because the last fixing would
+then be published on the payment date.
+
+- [x] The observation window as business days with their own day counts, so a
+      holiday removes an observation and lengthens the day before it
+- [x] All four conventions in use — in arrears, lookback, observation shift,
+      lockout — with the rate and the weight each taken from the right place
+- [x] Compounded and arithmetic averaging, treated as different contracts
+      rather than as one of them estimating the other
+- [x] Payment delay, kept apart from the four because it changes no rate
+- [x] Fixings read rather than projected, with a past observation that has none
+      refused instead of filled with the first projectable rate
+- [x] A leg: coupons on the adjusted boundaries, a value, and the spread that
+      makes one convention worth what another is worth, solved rather than
+      searched because value is linear in spread
+- [x] A command line route that prints the replication error beside each rate
+- [ ] A first release on the package index
+
+### The plain case is an identity, and that is the reason to build it here
+
+A projected overnight rate is `P(a)/P(b) - 1` over its day count, so each daily
+growth factor is a ratio of discount factors and the product over the period
+telescopes to `P(start)/P(end)`. Compounded in arrears is replicated by two
+zero-coupon bonds and needs no convexity adjustment of any kind — asserted at
+4.4e-16 relative on a curve with a 50bp step inside the period rather than to a
+chosen tolerance. An observation shift keeps the identity over the shifted
+window, to 6.7e-16. A lookback and a lockout cannot: the first pairs one day's
+rate with another day's weight, the second repeats a factor. That is read off
+the structure and refused in `replication_factor`, rather than inferred from the
+size of a difference.
+
+### A smooth curve hides the entire subject
+
+The size of a window convention is the curve's local slope times the lag. On a
+curve built by interpolating zero rates, a five-day lookback over three months
+is worth 0.000bp and a two-day one 0.007bp. Put a 50bp policy step inside the
+period and the same five-day lookback is worth -3.84bp and a ten-day one
+-7.67bp. The conventions exist because of the steps, so a model that smooths
+them away cannot be used to decide whether they matter.
+
+### The difference between a lookback and a shift is a redistribution
+
+A lookback keeps each accrual day's weight; a shift takes the observation day's.
+On a weekends-only calendar five business days is exactly seven calendar days,
+so **not one of the sixty-six days in the test period carries a different
+weight** and the two conventions agree bit for bit — at five days and at ten.
+At two, three and four days, 26 of the 66 do, with the total untouched, and the
+same curve gives -1.10bp for the lookback against -2.19bp for the shift. At one
+day the total itself moves by two calendar days' worth, because the period runs
+Monday to Tuesday and only the start crosses a weekend.
+
+A first draft of the test asserted that a two-day shift breaks the sum of the
+weights. It does not; the shifted window there spans the same number of calendar
+days. What breaks is the pairing, not the total.
+
+### A lockout is worth nothing unless the step is inside the locked window
+
+Exactly 0.0000bp at every lag with the step in the middle of the period, because
+the days it freezes all carried the same rate. Move the period so the step falls
+five business days before its end and the same lockout is worth -4.46bp,
+identically at five and ten days since both windows already reach past it.
+Quoting a lockout's effect without saying where the step is says nothing.
+
+### Compounding against averaging has a closed form, and it is consistent
+
+The product exceeds the sum by about `r^2 T / 2`: 1.33bp against 1.37bp
+predicted at three months on the step curve, and 1.10bp, 2.76bp and 7.22bp at
+three, six and twelve months on the smooth one. The closed form is high by 2.1%
+to 3.0% in all six measurements, always the same way, which is the third-order
+term it drops — a correction that is consistent is a different thing from an
+error that is not. The gap grows with the square of the tenor, which makes an
+averaged leg quoted against a compounded one a level-dependent basis rather than
+a spread.
+
+### At the level of a leg they compress, and one of them moves no rate
+
+On a three-year quarterly leg across a single 50bp step only one period of
+twelve spans it, so the -3.84bp a five-day lookback is worth inside that period
+becomes -0.337bp as a spread — the same for the shift, -0.241bp for the lockout,
+-1.493bp for arithmetic averaging. A five-day payment delay is worth -0.236bp
+while changing every period's rate by exactly zero.
+
+Which convention is worth most is a property of the curve and not of the
+convention. On the bundled quote curve, steep and at 20 to 220 basis points, the
+window conventions dominate the averaging basis; on a 3% curve with a step, the
+averaging basis dominates them.
+
+### Two things the schedule produced without being asked
+
+A lookback leg's first observation is the lag's worth of business days before
+the accrual starts, so a leg traded on its effective date is already asking for
+fixings published before the trade existed. And a schedule runs backward from
+maturity, so an effective date that is not a whole number of periods before it
+leaves a short stub — on which a lockout as long as the stub has nothing left to
+observe. Both are refused with the period named.

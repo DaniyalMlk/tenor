@@ -201,3 +201,10 @@ jobs:
             --basis ACT_365F --forecast examples/forecast-long.txt \
             --expiry 2036-01-15 --swap-maturity 2046-01-15 --volatility 0.20 \
             > /dev/null
+          tenor overnight examples/ois.txt --reference 2026-01-15 \
+            --basis ACT_365F --start 2026-03-16 --end 2026-06-16
+          tenor overnight examples/ois.txt --reference 2026-01-15 \
+            --basis ACT_365F --start 2026-03-16 --end 2026-06-16 --lag 2 \
+            --maturity 2029-02-02 --leg-frequency QUARTERLY
+          tenor --json overnight examples/ois.txt --reference 2026-01-15 \
+            --basis ACT_365F --start 2026-03-16 --end 2026-06-16 > /dev/null
