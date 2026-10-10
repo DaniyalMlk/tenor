@@ -672,3 +672,22 @@ def test_a_leg_rolls_on_its_own_frequency() -> None:
             ),
             rel=1e-13,
         )
+
+
+def test_a_lockout_longer_than_a_leg_s_stub_is_refused() -> None:
+    """Which a leg can produce without the caller choosing it.
+
+    A schedule runs backward from maturity, so an effective date that is not a
+    whole number of periods before it leaves a short first stub. A five-day
+    lockout on a leg whose stub is two business days long has nothing left to
+    observe, and the refusal names the period rather than the leg so the stub is
+    identifiable.
+    """
+    leg = OvernightLeg(
+        date(2026, 2, 2),
+        date(2029, 2, 4),
+        index=OvernightIndex(observation=Observation.LOCKOUT, days=5),
+    )
+    assert leg.schedule.has_stub
+    with pytest.raises(BadOvernight, match="leaves nothing observed"):
+        leg.value(STEP)
