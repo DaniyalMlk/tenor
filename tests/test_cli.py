@@ -2309,3 +2309,41 @@ def test_the_overnight_command_refuses_a_lag_with_no_trade_behind_it(
     assert main([*arguments, "--lag", "-1"]) == 2
     backwards = ["--start", "2021-06-16", "--end", "2021-03-16"]
     assert main(["overnight", *shared(quote_file), *backwards]) == 2
+
+
+def test_futures_values_the_delivery_option_when_asked(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "--json",
+                *futures_arguments(basket_file),
+                "--volatility",
+                "0.009",
+                "--forward-level",
+                "0.059",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    option = payload["delivery_option"]
+    assert option["priced_at"] == "the delivery date, not settlement"
+    # The two effects have fixed and opposite signs, and the net is their sum.
+    assert option["convexity"] > 0.0
+    assert option["switch"] < 0.0
+    assert option["net"] == pytest.approx(option["convexity"] + option["switch"], abs=1e-11)
+    assert option["futures_price"] == pytest.approx(
+        option["intrinsic"] + option["net"], abs=1e-11
+    )
+    shares = [entry["probability"] for entry in option["probabilities"]]
+    assert sum(shares) == pytest.approx(1.0, abs=1e-12)
+    assert len(option["kinks"]) == len([share for share in shares if share > 0.0]) - 1
+
+
+def test_futures_leaves_the_delivery_option_out_unless_asked(
+    basket_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *futures_arguments(basket_file)]) == 0
+    assert "delivery_option" not in json.loads(capsys.readouterr().out)

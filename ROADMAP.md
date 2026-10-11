@@ -1146,3 +1146,76 @@ fixings published before the trade existed. And a schedule runs backward from
 maturity, so an effective date that is not a whole number of periods before it
 leaves a short stub — on which a lockout as long as the stub has nothing left to
 observe. Both are refused with the period named.
+
+## Phase 22 — A measure on the line the switch walk draws
+
+- [x] The futures price as the expectation of the lowest normalised price, with
+      the yield level at delivery normal around a forward
+- [x] The convexity term and the switch term reported apart, because their
+      signs are fixed and opposite
+- [x] Delivery probabilities, exact rather than quadrature
+- [x] The envelope's kinks solved for pairwise rather than scanned
+- [x] Priced at the delivery date, which is not where `delivery_switch` prices
+- [x] Per-bond spreads, so an intermediate bond can be made live
+- [x] The convexity term against half the second derivative times the variance,
+      and the futures price against a simulation
+- [x] A `--volatility` flag on the `futures` command
+
+### The sign trap
+
+`delivery_switch` said in its own docstring that it was the geometry of the
+option and not its value. Putting a measure on that line turns up something the
+phrase "the delivery option" hides: two effects with fixed and opposite signs.
+The right to choose can only lower the price, because a minimum over the basket
+is at most any member of it. Each bond's price is convex in its yield, so
+letting the level move raises the expectation of whichever bond is delivered,
+and that is not a delivery option at all — on a basket of one the switch term is
+exactly zero and the net is positive.
+
+At the crossing, with 90 basis points of annualised yield volatility, the
+convexity is +0.124 and the switch -0.398, for a net of -0.274 or 8.8
+thirty-seconds. The switch is roughly linear in the deviation and the convexity
+quadratic, so at 400 basis points the net has turned positive. It turns positive
+in the level too: twenty basis points either side of the crossing one bond is
+cheapest with probability 0.999 and only the convexity is left. So the two are
+reported apart, and a single number for the option is not.
+
+### Two live bonds out of four
+
+With the conversion factors unrounded the 4.500% of 2047 is cheapest inside a
+window 1.195 basis points wide; with the published four decimal places, 0.131.
+The rounding narrows it by a factor of nine and the bond's chance of being
+delivered from 1.57% to 0.17%, and the 3.000% of 2046 is never cheapest at
+either rounding.
+
+Numbers that small are only meaningful if they do not depend on how the envelope
+was found, and the first implementation's did. It scanned the envelope and
+bisected where the argument of the minimum changed, and a grid fine enough to
+resolve a tenth of a basis point at one volatility is not fine enough at
+another — so the kinks and the probabilities moved with the volatility for no
+reason but the grid. Solving the pairs instead removes the grid: every candidate
+is a crossing of some pair, each pair's difference brackets a sign change over
+the range, and the envelope's kinks are the subset at which the minimum's
+argument actually changes.
+
+### A convention read, not assumed
+
+`delivery_switch` prices the basket at settlement. This has to price it at
+delivery. The two sets of crossings are nine to ten basis points apart on this
+basket, which against a window a tenth of a basis point wide is not a detail:
+borrowing one date's crossings for the other's measure puts every region in the
+wrong place. The test that measures the gap is there because the first draft
+asserted the two agreed.
+
+### Where the panel rule earns less than usual
+
+The regions have to be found anyway, which is what makes the delivery
+probabilities exact — differences of the normal distribution function rather
+than a quadrature. But the alignment buys much less accuracy here than
+elsewhere in this library, and that is worth stating rather than claiming the
+usual gain: the discontinuity is in the first derivative only and the two
+crossing bonds have nearly the same slope, so a uniform grid is wrong by about
+2e-6 of a price point against the 35 to 700 times a jump in the value has cost
+before. What it does cost is monotone convergence. The uniform grid's error at
+24, 48, 96, 192 and 384 panels runs -2.3e-6, +1.6e-8, +7.7e-7, +4.7e-7,
++4.5e-8, so a two-point convergence check on it reports the method diverging.
