@@ -85,11 +85,13 @@ __all__ = [
     "BondFuture",
     "CheapestToDeliver",
     "DeliveryBasis",
+    "DeliveryOption",
     "RoundedLife",
     "SwitchLevel",
     "cheapest_to_deliver",
     "conversion_factor",
     "delivery_basis",
+    "delivery_option",
     "delivery_switch",
     "futures_dv01",
     "implied_repo_rate",
@@ -697,3 +699,322 @@ def futures_dv01(
     does not describe.
     """
     return basis.bond.pv01(yield_level, settlement, shift=shift) / basis.conversion_factor
+
+
+@dataclass(frozen=True)
+class DeliveryOption:
+    """The value of the short's option to choose, not merely its geometry.
+
+    Attributes:
+        yield_deviation: Standard deviation of the yield level at delivery,
+            ``volatility * sqrt(years to delivery)``.
+        intrinsic: The futures price the basket justifies if the level does not
+            move: the lowest price over conversion factor at the forward level.
+        intrinsic_cheapest: The bond that justifies it.
+        futures_price: ``E[min over the basket]`` once the level is allowed to
+            move, which is the price the contract should trade at.
+        convexity: What the cheapest bond's own convexity adds, holding the
+            choice fixed. Non-negative, by Jensen's inequality on a convex
+            price-yield function.
+        switch: What the right to change bonds subtracts. Non-positive, because
+            the minimum over the basket is at most any one member of it.
+        net: ``futures_price - intrinsic``, identically ``convexity + switch``.
+            Its sign is a question about this basket rather than a general fact.
+        probabilities: Chance each bond is the cheapest at delivery, in the
+            order the basket was given. Exact: the regions are the intervals
+            between the kinks, so these are differences of the normal
+            distribution function rather than a quadrature.
+        kinks: Yield levels at which the cheapest bond changes, increasing.
+    """
+
+    forward_level: float
+    yield_deviation: float
+    intrinsic: float
+    intrinsic_cheapest: str
+    futures_price: float
+    convexity: float
+    switch: float
+    net: float
+    probabilities: tuple[tuple[str, float], ...]
+    kinks: tuple[float, ...]
+
+
+_GAUSS_NODES = 16
+_GAUSS_PANELS = 24
+_GAUSS_WIDTH = 9.0
+
+
+def _legendre(nodes: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Gauss-Legendre nodes and weights on ``(-1, 1)``, by Newton on the polynomial.
+
+    Written here rather than imported because this library has no numerical
+    dependency and is not about to acquire one for sixteen numbers. The
+    starting guesses are Tricomi's, which are good enough that three Newton
+    steps reach the last bit.
+    """
+    points: list[float] = []
+    weights: list[float] = []
+    for index in range(1, nodes + 1):
+        guess = math.cos(math.pi * (index - 0.25) / (nodes + 0.5))
+        value = guess
+        derivative = 0.0
+        for _ in range(100):
+            previous, current = 1.0, value
+            for degree in range(2, nodes + 1):
+                previous, current = current, (
+                    (2 * degree - 1) * value * current - (degree - 1) * previous
+                ) / degree
+            derivative = nodes * (value * current - previous) / (value * value - 1.0)
+            step = current / derivative
+            value -= step
+            if abs(step) < 1e-16:
+                break
+        points.append(-value)
+        weights.append(2.0 / ((1.0 - value * value) * derivative * derivative))
+    order = sorted(range(nodes), key=lambda k: points[k])
+    return tuple(points[k] for k in order), tuple(weights[k] for k in order)
+
+
+def _normal_density(z: float) -> float:
+    return math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+
+
+def _standard_normal_cdf(z: float) -> float:
+    return 0.5 * math.erfc(-z / math.sqrt(2.0))
+
+
+def _normalised_prices(
+    basket: Sequence[Bond],
+    factors: Sequence[float],
+    spreads: Sequence[float],
+    delivery: date,
+    level: float,
+) -> list[float]:
+    """Each bond's clean price at delivery over its conversion factor."""
+    return [
+        bond.clean_price(level + spread, delivery) / factor
+        for bond, factor, spread in zip(basket, factors, spreads, strict=True)
+    ]
+
+
+def _envelope_kinks(
+    basket: Sequence[Bond],
+    factors: Sequence[float],
+    spreads: Sequence[float],
+    delivery: date,
+    low: float,
+    high: float,
+) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Where the cheapest bond changes on ``[low, high]``, and which bond rules where.
+
+    Every candidate is a crossing of *some pair* of normalised prices, so the
+    pairs are solved rather than the envelope scanned. Each pair's difference is
+    a difference of two smooth decreasing functions; where the endpoints bracket
+    a sign change there is a crossing, and bisection finds it to the last
+    representable step. The envelope's kinks are then the subset of those
+    crossings at which the argument of the minimum actually changes, decided by
+    evaluating it at the midpoint of each segment.
+
+    Doing it this way rather than by scanning matters more than it looks. The
+    intermediate bonds of a long basket are cheapest only inside a window about
+    a tenth of a basis point wide, and a scan fine enough to see that at one
+    volatility is not fine enough at another -- so the reported kinks, and the
+    delivery probabilities that come from them, would move with the volatility
+    for no reason but the grid.
+    """
+    size = len(basket)
+    candidates: list[float] = []
+    for first in range(size):
+        for second in range(first + 1, size):
+
+            def gap(
+                point: float, first: int = first, second: int = second
+            ) -> float:
+                prices = _normalised_prices(basket, factors, spreads, delivery, point)
+                return prices[first] - prices[second]
+
+            left, right = low, high
+            left_sign = gap(left)
+            if left_sign == 0.0:
+                candidates.append(left)
+                continue
+            if left_sign * gap(right) > 0.0:
+                continue
+            for _ in range(200):
+                middle = 0.5 * (left + right)
+                if middle <= left or middle >= right:
+                    break
+                if gap(middle) * left_sign > 0.0:
+                    left = middle
+                else:
+                    right = middle
+            candidates.append(0.5 * (left + right))
+    edges = [low, *sorted(candidates), high]
+    owners: list[int] = []
+    boundaries: list[float] = []
+    for index in range(len(edges) - 1):
+        middle = 0.5 * (edges[index] + edges[index + 1])
+        prices = _normalised_prices(basket, factors, spreads, delivery, middle)
+        owner = min(range(size), key=lambda k: prices[k])
+        if owners and owner == owners[-1]:
+            continue
+        if owners:
+            boundaries.append(edges[index])
+        owners.append(owner)
+    return tuple(boundaries), tuple(owners)
+
+
+def delivery_option(
+    basket: Sequence[Bond],
+    future: BondFuture,
+    *,
+    settlement: date,
+    forward_level: float,
+    volatility: float,
+    spreads: Sequence[float] | None = None,
+) -> DeliveryOption:
+    """Value the short's right to choose which bond to deliver.
+
+    :func:`delivery_switch` walks a flat yield across the basket and says which
+    bond is cheapest at each level, which is the option's geometry. This puts a
+    measure on that line: the yield level at delivery is normal around
+    ``forward_level`` with a standard deviation of ``volatility`` times the root
+    of the time to delivery, each bond keeps its own spread to that level, and
+    the futures price is the expectation of the lowest normalised price.
+
+    **Two effects, pulling opposite ways.** The right to choose can only lower
+    the price, since a minimum over the basket is at most any one member of it.
+    Each bond's price is convex in its yield, so letting the level move raises
+    the expectation of whichever bond is delivered. The second is not a delivery
+    option at all and does not vanish on a basket of one; the two are reported
+    separately for that reason, and their sum is what the quote has to clear.
+    The net is negative on a basket with a real choice in it and positive on a
+    basket of one, so "the delivery option" as a single number is a sign error
+    waiting to happen.
+
+    **Priced at delivery, not at settlement.** :func:`delivery_switch` walks
+    the yield with the basket priced at *settlement*, because it is describing
+    the basis a desk is looking at today. The choice is made at delivery and the
+    invoice is computed there, so this prices the basket at the delivery date,
+    and the two sets of crossings are not the same: on a long basket they are
+    nine to ten basis points apart, against a window in which the intermediate
+    bond is cheapest that is a tenth of a basis point wide. Borrowing one date's
+    crossings for the other's measure would put every region in the wrong place.
+
+    **The kinks are the panel edges.** The integrand is smooth except where the
+    cheapest bond changes, and a quadrature panel straddling one of those loses
+    most of its order. The regions between kinks are found first and integrated
+    separately, which also makes the delivery probabilities exact rather than
+    quadrature: they are differences of the normal distribution function over
+    intervals.
+
+    Args:
+        basket: The deliverable bonds.
+        future: The contract, which supplies the conversion factors.
+        settlement: Today, for the time to delivery.
+        forward_level: Expected yield level at delivery, as a decimal.
+        volatility: Annualised standard deviation of that level in yield units
+            -- 0.009 for 90 basis points a year. Zero is allowed and returns
+            the intrinsic.
+        spreads: Each bond's own spread to the level, as decimals. Zero if
+            omitted. Without them a long basket's intermediate bond is cheapest
+            only inside a narrow window -- 1.195 basis points on the unrounded
+            factors and 0.131 on the published four-digit ones, so the rounding
+            narrows it by a factor of nine and the bond's chance of being
+            delivered with it.
+
+    Raises:
+        BadDelivery: If the basket is empty, the spreads do not line up with it,
+            the volatility is negative, or delivery is not after settlement.
+    """
+    if not basket:
+        raise BadDelivery("an empty basket gives the short nothing to choose between")
+    offsets = tuple(0.0 for _ in basket) if spreads is None else tuple(spreads)
+    if len(offsets) != len(basket):
+        raise BadDelivery(
+            f"{len(basket)} bonds and {len(offsets)} spreads; they have to line up"
+        )
+    if not math.isfinite(volatility) or volatility < 0.0:
+        raise BadDelivery(
+            f"a yield volatility of {volatility!r} is not a non-negative number"
+        )
+    if future.delivery <= settlement:
+        raise BadDelivery(
+            f"delivery on {future.delivery.isoformat()} is not after settlement on "
+            f"{settlement.isoformat()}, so there is no time for the level to move"
+        )
+    factors = tuple(future.conversion_factor(bond) for bond in basket)
+    years = year_fraction(settlement, future.delivery, future.money_basis)
+    deviation = volatility * math.sqrt(years)
+
+    at_forward = _normalised_prices(basket, factors, offsets, future.delivery, forward_level)
+    cheapest = min(range(len(basket)), key=lambda k: at_forward[k])
+    intrinsic = at_forward[cheapest]
+    if deviation == 0.0:
+        return DeliveryOption(
+            forward_level=forward_level,
+            yield_deviation=0.0,
+            intrinsic=intrinsic,
+            intrinsic_cheapest=basket[cheapest].name,
+            futures_price=intrinsic,
+            convexity=0.0,
+            switch=0.0,
+            net=0.0,
+            probabilities=tuple(
+                (bond.name, 1.0 if index == cheapest else 0.0)
+                for index, bond in enumerate(basket)
+            ),
+            kinks=(),
+        )
+
+    low = forward_level - _GAUSS_WIDTH * deviation
+    high = forward_level + _GAUSS_WIDTH * deviation
+    kinks, owners = _envelope_kinks(basket, factors, offsets, future.delivery, low, high)
+    edges = (low, *kinks, high)
+    nodes, weights = _legendre(_GAUSS_NODES)
+
+    def integrate(left: float, right: float, index: int) -> float:
+        """``int P_index(y) phi(y) dy`` over ``[left, right]``, in panels."""
+        count = max(1, math.ceil(_GAUSS_PANELS * (right - left) / (high - low)))
+        total = 0.0
+        for panel in range(count):
+            start = left + (right - left) * panel / count
+            stop = left + (right - left) * (panel + 1) / count
+            half = 0.5 * (stop - start)
+            centre = 0.5 * (stop + start)
+            for node, weight in zip(nodes, weights, strict=True):
+                level = centre + half * node
+                price = (
+                    basket[index].clean_price(level + offsets[index], future.delivery)
+                    / factors[index]
+                )
+                total += (
+                    half * weight * price * _normal_density((level - forward_level) / deviation)
+                    / deviation
+                )
+        return total
+
+    expected = 0.0
+    probabilities = [0.0] * len(basket)
+    for region, index in enumerate(owners):
+        left, right = edges[region], edges[region + 1]
+        expected += integrate(left, right, index)
+        probabilities[index] += _standard_normal_cdf(
+            (right - forward_level) / deviation
+        ) - _standard_normal_cdf((left - forward_level) / deviation)
+    held = integrate(low, high, cheapest)
+    convexity = held - intrinsic
+    return DeliveryOption(
+        forward_level=forward_level,
+        yield_deviation=deviation,
+        intrinsic=intrinsic,
+        intrinsic_cheapest=basket[cheapest].name,
+        futures_price=expected,
+        convexity=convexity,
+        switch=expected - held,
+        net=expected - intrinsic,
+        probabilities=tuple(
+            (bond.name, probabilities[index]) for index, bond in enumerate(basket)
+        ),
+        kinks=kinks,
+    )
