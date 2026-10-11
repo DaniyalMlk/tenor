@@ -66,6 +66,7 @@ from .futures import (
     DEFAULT_NOTIONAL_COUPON,
     BondFuture,
     cheapest_to_deliver,
+    delivery_option,
     delivery_switch,
 )
 from .fx import (
@@ -2191,6 +2192,32 @@ def run_futures(arguments: argparse.Namespace) -> dict[str, object]:
                 for level in levels
             ],
         }
+    if arguments.volatility is not None:
+        option = delivery_option(
+            bonds,
+            future,
+            settlement=settlement,
+            forward_level=arguments.forward_level,
+            volatility=arguments.volatility,
+        )
+        result["delivery_option"] = {
+            "priced_at": "the delivery date, not settlement",
+            "forward_level": option.forward_level,
+            "yield_volatility": arguments.volatility,
+            "yield_deviation_at_delivery": option.yield_deviation,
+            "intrinsic": option.intrinsic,
+            "intrinsic_cheapest": option.intrinsic_cheapest,
+            "futures_price": option.futures_price,
+            # Reported apart because their signs are fixed and opposite, and
+            # their sum is not a delivery option.
+            "convexity": option.convexity,
+            "switch": option.switch,
+            "net": option.net,
+            "kinks": list(option.kinks),
+            "probabilities": [
+                {"bond": name, "probability": share} for name, share in option.probabilities
+            ],
+        }
     return result
 
 
@@ -2532,6 +2559,22 @@ def parser() -> argparse.ArgumentParser:
         required=True,
         type=float,
         help="the financing rate as a decimal, simple interest on the money basis",
+    )
+    futures.add_argument(
+        "--volatility",
+        type=float,
+        default=None,
+        help=(
+            "annualised normal yield volatility, as a decimal, to value the "
+            "short's delivery option with; omitted, it is not valued"
+        ),
+    )
+    futures.add_argument(
+        "--forward-level",
+        dest="forward_level",
+        type=float,
+        default=0.06,
+        help="expected yield level at delivery, for --volatility",
     )
     futures.add_argument(
         "--notional-coupon",

@@ -87,7 +87,9 @@ def test_a_basket_of_one_has_no_choice_and_the_option_is_still_not_zero() -> Non
     assert got.convexity > 0.0
     assert got.net == pytest.approx(got.convexity, rel=1e-14)
     assert got.futures_price > got.intrinsic
-    assert got.probabilities == ((one[0].name, pytest.approx(1.0, abs=1e-15)),)
+    assert len(got.probabilities) == 1
+    assert got.probabilities[0][0] == one[0].name
+    assert got.probabilities[0][1] == pytest.approx(1.0, abs=1e-15)
 
 
 def test_the_two_effects_have_fixed_signs_and_add_to_the_net() -> None:
