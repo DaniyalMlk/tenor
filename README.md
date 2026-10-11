@@ -1909,6 +1909,96 @@ published before the trade existed. Refused rather than filled with the first
 projectable rate, which would be silently wrong by the whole move since the
 window opened.
 
+## The value of the short's option, not just its geometry
+
+`delivery_switch` walks a flat yield across a deliverable basket and says which
+bond is cheapest at each level. Its own docstring said what that was and was
+not: *"the geometry of the short's option, not its value. Valuing it needs a
+model of how the curve moves between now and delivery."* This puts a measure on
+that line. The yield level at delivery is normal around a forward, each bond
+keeps its own spread to it, and the futures price is the expectation of the
+lowest price over conversion factor.
+
+```bash
+tenor futures basket.csv --settlement 2026-11-20 --first-delivery 2026-12-01 \
+    --delivery 2026-12-31 --price 118.75 --repo 0.042 \
+    --volatility 0.009 --forward-level 0.059
+```
+
+### Two effects, and their sum is not a delivery option
+
+The right to choose can only lower the price: a minimum over the basket is at
+most any member of it. But each bond's price is convex in its yield, so letting
+the level move *raises* the expectation of whichever bond is delivered — and
+that has nothing to do with having a choice. On a basket of one the switch term
+is exactly zero and the net is positive.
+
+On the long basket, at a forward level sitting on its crossing:
+
+| yield vol | deviation at delivery | convexity | switch | net | in 32nds |
+| --- | --- | --- | --- | --- | --- |
+| 20bp | 6.8bp | +0.0061 | -0.0806 | -0.0745 | -2.4 |
+| 50bp | 16.9bp | +0.0383 | -0.2140 | -0.1757 | -5.6 |
+| 90bp | 30.4bp | +0.1241 | -0.3984 | -0.2743 | -8.8 |
+| 200bp | 67.5bp | +0.6148 | -0.9465 | -0.3316 | -10.6 |
+| 400bp | 135.0bp | +2.4921 | -2.1196 | **+0.3725** | **+11.9** |
+
+The switch is roughly linear in the deviation and the convexity quadratic, so
+the convexity overtakes it and the net changes sign. It changes sign in the
+level too — twenty basis points either side of the crossing one bond is cheapest
+with probability 0.999 and the net is positive:
+
+| forward level | cheapest | net | largest delivery probability |
+| --- | --- | --- | --- |
+| 3.0% | 6.250% of 2047 | +0.1535 | 1.0000 |
+| 5.9% | 1.750% of 2046 | **-0.2743** | 0.5047 |
+| 7.0% | 1.750% of 2046 | +0.1004 | 0.9999 |
+
+So "the delivery option is worth X" as a single number is a sign error waiting
+to happen, and the two terms are reported apart for that reason.
+
+### A tenth of a basis point, and what the published rounding does to it
+
+The intermediate bonds of this basket are barely deliverable. With the
+conversion factors unrounded, the 4.500% of 2047 is cheapest inside a window
+**1.195 basis points** wide; with the published four decimal places, **0.131
+basis points** — the rounding narrows it by a factor of nine, and its chance of
+being delivered from 1.57% to 0.17%. The 3.000% of 2046 is never cheapest at
+either rounding. A four-bond basket has two live members.
+
+The kinks are solved for rather than scanned, which is what makes those numbers
+stable. Every candidate is a crossing of some *pair* of normalised prices, each
+pair's difference brackets a sign change over the range, and bisection finds it
+exactly; the envelope's kinks are the subset at which the argument of the
+minimum actually changes. The first implementation scanned the envelope on a
+grid, and a grid fine enough to resolve a tenth of a basis point at one
+volatility is not fine enough at another — so the reported kinks, and the
+delivery probabilities that come from them, moved with the volatility for no
+reason but the grid.
+
+### Priced at delivery, which is not where the geometry is priced
+
+`delivery_switch` prices the basket at *settlement*, because it is describing
+the basis a desk is looking at today. The choice is made at delivery and the
+invoice is computed there, so this prices it at the delivery date — and the two
+sets of crossings are **nine to ten basis points apart** on this basket, against
+a window a tenth of a basis point wide. Borrowing one date's crossings for the
+other's measure would put every region in the wrong place.
+
+### Where the usual rule earns less than usual
+
+Putting every discontinuity on a quadrature panel edge is the house rule, and
+here the regions have to be found anyway — the delivery probabilities are
+differences of the normal distribution function over them, exact rather than
+quadrature. But it is worth saying what the alignment buys, because it is much
+less than usual: the kink is in the first derivative only, and the two bonds
+that cross have nearly the same slope where they do, so a uniform grid that
+straddles the kinks is wrong by about **2e-6 of a price point** rather than the
+35 to 700 times a jump in the value has cost elsewhere in this library. What it
+does cost is monotone convergence: the uniform grid's error at 24, 48, 96, 192
+and 384 panels is -2.3e-6, +1.6e-8, +7.7e-7, +4.7e-7, +4.5e-8, so a two-point
+convergence check on it reports the method diverging.
+
 ## Development
 
 ```bash
