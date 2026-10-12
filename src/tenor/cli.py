@@ -140,6 +140,12 @@ from .overnight import (
     convention_margin,
     replication_factor,
 )
+from .parametric import (
+    CurveFit,
+    Family,
+    Weighting,
+    fit_bonds,
+)
 from .rates import Compounding
 from .risk import buckets_from, instrument_risk, key_rates, level, shape_duration
 from .schedule import Frequency, add_months, generate
@@ -1579,6 +1585,167 @@ def run_fx(arguments: argparse.Namespace) -> dict[str, object]:
     return payload
 
 
+def _fitted_bonds(
+    path: str, reference: date, frequency: Frequency, basis: Basis
+) -> list[tuple[Bond, float]]:
+    """Read ``maturity,coupon,clean[,effective]`` lines into bonds and quotes.
+
+    The coupon is a decimal, as everywhere else here, and a value above one is
+    refused rather than fitted: a file written in per cent parses perfectly and
+    produces a curve that is wrong by a factor of a hundred, which is the kind
+    of mistake that survives a long way.
+
+    An omitted issue date is taken as the most recent coupon anniversary of the
+    maturity on or before the reference date. That default is almost always
+    invisible, and it is worth saying why rather than implying it is delicate: a
+    bullet bond's schedule is generated *backwards* from its maturity, so the
+    issue date fixes only the length of the first period. Once settlement is
+    past that period the accrual is identical whatever the issue date — 2025-03-07
+    and the default 2026-01-15 both accrue 0.0347 on a 2.5% of 2027-07-15 at a
+    2026-01-20 settlement. The fourth field therefore matters for exactly one
+    case, a bond still inside its first period, and there it matters a lot: an
+    issue date of 2026-01-18 accrues 0.0139 instead, two days rather than five.
+    """
+    months = 12 // int(frequency.value) if int(frequency.value) else 12
+    quotes: list[tuple[Bond, float]] = []
+    with open(path, encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, start=1):
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) not in (3, 4):
+                raise ValueError(
+                    f"{path}:{number}: expected maturity,coupon,clean[,effective], "
+                    f"got {len(fields)} fields"
+                )
+            maturity = date.fromisoformat(fields[0])
+            coupon = float(fields[1])
+            if abs(coupon) > 1.0:
+                raise ValueError(
+                    f"{path}:{number}: a coupon of {coupon} is {coupon * 100:.0f} per "
+                    "cent; coupons here are decimals, so 4.5% is 0.045"
+                )
+            clean = float(fields[2])
+            if len(fields) == 4:
+                effective = date.fromisoformat(fields[3])
+            else:
+                effective = maturity
+                while effective > reference:
+                    effective = add_months(
+                        effective, -months, keep_end_of_month=False
+                    )
+            quotes.append(
+                (
+                    Bond(
+                        effective=effective,
+                        maturity=maturity,
+                        coupon=coupon,
+                        frequency=frequency,
+                        basis=basis,
+                    ),
+                    clean,
+                )
+            )
+    if not quotes:
+        raise ValueError(f"{path}: no bond quotes in the file")
+    return quotes
+
+
+def _fit_rows(fit: CurveFit, quotes: list[tuple[Bond, float]]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for (bond, clean), residual, weighted in zip(
+        quotes, fit.residuals, fit.weighted, strict=True
+    ):
+        rows.append(
+            {
+                "bond": bond.name,
+                "maturity": bond.maturity.isoformat(),
+                "quoted_clean": clean,
+                "fitted_clean": clean + residual,
+                "price_error": residual,
+                "weighted_error": weighted,
+            }
+        )
+    return rows
+
+
+def run_fit(arguments: argparse.Namespace) -> dict[str, object]:
+    """Fit a parametric forward curve to bond prices, and say what it did not fit.
+
+    The headline is two numbers, not one. The curve is determined — the quotes
+    are repriced to a fraction of a basis point — and its parameters are not:
+    the band of decays that reprice within the stated tolerance is reported
+    beside the fitted value, and so is how far the level parameters travel
+    across that band. On a ten-bond government curve at ten basis points of
+    tolerance the decay runs over a factor of a hundred and the slope
+    coefficient moves by thousands, which is why quoting a fitted ``b1`` as the
+    slope of the curve is quoting a number nobody measured.
+    """
+    reference = date.fromisoformat(arguments.reference)
+    settlement = (
+        date.fromisoformat(arguments.settlement) if arguments.settlement else reference
+    )
+    frequency = Frequency[arguments.frequency.upper()]
+    quotes = _fitted_bonds(
+        arguments.bonds, reference, frequency, _basis(arguments.bond_basis)
+    )
+    family = Family[arguments.family.upper()]
+    weighting = Weighting[arguments.weighting.upper()]
+    fit = fit_bonds(
+        reference,
+        quotes,
+        settlement,
+        family=family,
+        basis=_basis(arguments.basis),
+        weighting=weighting,
+        tolerance=arguments.tolerance,
+    )
+    band = fit.identified
+    payload: dict[str, object] = {
+        "reference": reference.isoformat(),
+        "settlement": settlement.isoformat(),
+        "family": family.value,
+        "weighting": weighting.value,
+        "quotes": len(quotes),
+        "parameters": family.levels + family.decays,
+        "levels": list(fit.curve.levels),
+        "decays": list(fit.curve.decays),
+        "long_rate": fit.curve.long_rate,
+        "short_rate": fit.curve.short_rate,
+        "root_mean_square": fit.rms,
+        "worst": fit.worst,
+        "worst_quote": fit.worst_quote,
+        "gauss_newton_steps": fit.iterations,
+        "condition": fit.condition,
+        "tolerance": band.tolerance,
+        "decays_lowest": list(band.lowest),
+        "decays_highest": list(band.highest),
+        "decay_ratio": band.widest,
+        "decays_bounded": list(band.bounded),
+        "level_spread": list(band.level_spread),
+        "quote_errors": _fit_rows(fit, quotes),
+        "zero_curve": [
+            {"years": years, "zero": fit.curve.zero(float(years))}
+            for years in (1, 2, 3, 5, 7, 10, 20, 30)
+        ],
+    }
+    units = "rate" if weighting is Weighting.YIELD else "price per 100"
+    payload["reading"] = (
+        f"{len(quotes)} quotes fitted by {family.levels + family.decays} parameters to "
+        f"{fit.rms:.3e} ({units}), worst {fit.worst:.3e} on {fit.worst_quote}. "
+        f"Within {band.tolerance:.0e} the decays run "
+        + ", ".join(
+            f"{low:.3f} to {high:.3f}"
+            for low, high in zip(band.lowest, band.highest, strict=True)
+        )
+        + f" — a factor of {band.widest:.2f} — across which the level parameters move "
+        + ", ".join(f"{spread:.3g}" for spread in band.level_spread)
+        + ". The curve is determined; these parameters are not."
+    )
+    return payload
+
+
 def run_overnight(arguments: argparse.Namespace) -> dict[str, object]:
     """One accrual period under every convention, and the same as a leg spread.
 
@@ -2280,6 +2447,59 @@ def parser() -> argparse.ArgumentParser:
         help="key rate buckets, in years",
     )
     risk.set_defaults(run=run_risk)
+
+    fitted = subcommands.add_parser(
+        "fit",
+        help="fit a parametric forward curve to bond prices",
+        description=(
+            "Fits a Nelson-Siegel or Svensson forward curve to more bond quotes "
+            "than it has parameters, which is the case the bootstrap cannot "
+            "serve: a set of bonds that disagree with one another and no curve "
+            "that prices all of them. Reports the band of decay parameters that "
+            "reprice the quotes within the stated tolerance, and how far the "
+            "level parameters move across it, because the fitted curve is "
+            "determined and the fitted parameters are not."
+        ),
+    )
+    fitted.add_argument("bonds", help="a file of maturity,coupon,clean[,effective] lines")
+    fitted.add_argument("--reference", required=True, help="the curve's reference date, ISO")
+    fitted.add_argument(
+        "--settlement", help="the date the quotes are for; the reference date by default"
+    )
+    fitted.add_argument(
+        "--basis",
+        required=True,
+        choices=[one.name for one in Basis],
+        help="the day count the curve measures its own year fractions in",
+    )
+    fitted.add_argument(
+        "--family",
+        default=Family.NELSON_SIEGEL.name,
+        choices=[one.name for one in Family],
+    )
+    fitted.add_argument(
+        "--weighting",
+        default=Weighting.YIELD.name,
+        choices=[one.name for one in Weighting],
+        help="PRICE weights price errors equally and leaves the short end loose",
+    )
+    fitted.add_argument(
+        "--tolerance",
+        type=float,
+        default=1e-4,
+        help="the repricing tolerance the decay band is measured at; a basis point by default",
+    )
+    fitted.add_argument(
+        "--frequency",
+        default="SEMI_ANNUAL",
+        choices=[one.name for one in Frequency],
+    )
+    fitted.add_argument(
+        "--bond-basis",
+        default=Basis.THIRTY_360_BOND.name,
+        choices=[one.name for one in Basis],
+    )
+    fitted.set_defaults(run=run_fit)
 
     ahead = subcommands.add_parser(
         "horizon",

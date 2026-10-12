@@ -1999,6 +1999,97 @@ does cost is monotone convergence: the uniform grid's error at 24, 48, 96, 192
 and 384 panels is -2.3e-6, +1.6e-8, +7.7e-7, +4.7e-7, +4.5e-8, so a two-point
 convergence check on it reports the method diverging.
 
+## A curve with fewer parameters than quotes
+
+Everything above passes exactly through its inputs. `bootstrap` solves one pillar
+per instrument, so the parameter count equals the quote count and the fit is an
+identity. That is right for a swap curve and wrong for a government bond curve,
+where thirty bonds of differing coupon, age and liquidity disagree with each
+other and no curve prices all of them.
+
+```bash
+tenor fit gilts.csv --reference 2026-01-15 --settlement 2026-01-20 --basis ACT_365F
+```
+
+Ten quotes, four parameters:
+
+```
+root_mean_square: 0.0001716
+worst: 0.0002855 on 4.000% of 2031-07-15
+decays: 2.704
+decays_lowest: 2.026   decays_highest: 3.516   decay_ratio: 1.735
+level_spread: 0.00277, 0.00744, 0.00565
+```
+
+`fit_zeros` fits observed zero rates and `fit_bonds` fits clean prices;
+`ParametricCurve.to_discount_curve` samples the form onto pillars, so bond
+analytics, key rates and spreads work on a fitted curve without knowing it was
+fitted.
+
+### The integral, not the average
+
+The zero rate is conventionally written as the average forward, which carries a
+`(1 - exp(-x)) / x` and a division by zero at the anchor. Discounting wants the
+integral, which is that average times `t` and has no division in it. So the
+integral is the primitive here and the zero rate is derived from it: the anchor
+of every curve stops being a special case. Checked against a Simpson rule on the
+instantaneous forward to 1e-13.
+
+### Coordinate sweeps cannot fit a Svensson curve
+
+With the decays held fixed the levels are linear, so each candidate decay is one
+least-squares solve and only the decays need searching — which made the search
+look easy and is not. Svensson's objective has a diagonal valley: lengthening
+one decay while shortening the other barely moves the curve. Fitted to **its own
+exact zero rates**, coordinate-wise golden section returns decays of 1.73 and
+5.99 against a truth of 1.6 and 9.0, at a root mean square of 3.2e-05 that reads
+as a respectable fit. The objective at the truth is 1e-17. The refinement ends
+in a simplex over the log decays, which finds it.
+
+The failure mode is worth the sentence: not a crash, not an obviously wrong
+number, a plausible parameter set. Generating the data from a known curve is what
+exposes it.
+
+### The curve is determined; the parameters are not
+
+Every fit reports the band of decays that reprice the quotes within a stated
+tolerance, found by stepping outward from the optimum and bisecting:
+
+| tolerance | decay band | factor | level travel |
+|---|---|---|---|
+| 0.1bp | 2.36 to 2.63 | 1.11 | 0.0006 to 0.0022 |
+| 1bp | 1.92 to 3.06 | 1.59 | 0.0022 to 0.0069 |
+| 10bp | 0.10 to 10.77 | 104 | 0.028, then 4,700 |
+
+Read the last row. Across a band every point of which reprices the same ten
+quotes within ten basis points, the level parameter moves by 0.028 and the slope
+and hump coefficients move by about 4,700 — because a decay going to zero and a
+slope coefficient going to infinity are the same curve. A fitted `b1` quoted as
+"the slope of the curve" is a number nobody measured.
+
+### What the conditioning costs
+
+Svensson's two humps become the same function as the decays converge: condition
+number 3.1e+04 with them a thousandth apart. The normal equations work at the
+square of that and lose nine digits — recovering a known parameter set, the
+Householder reflections are wrong by 6.4e-14 and the normal equations by
+6.6e-10. Four orders of magnitude on a matrix with four columns.
+
+It is not monotone in the ratio of the decays either: 3,125 at a ratio of 1.01,
+46 at 3.0, 239 at 8.0. The humps coincide at one end and the second hump leaves
+the quoted range at the other, so a sweep that stopped at one end would conclude
+the form is fine.
+
+### Weighting, in both directions
+
+Equal weight on price errors is not equal weight on yield errors, because a
+one-year bond's yield moves its price a fortieth as much as a thirty-year
+bond's. On the same quotes the worst yield error is 3.94 basis points under
+`PRICE` and 2.60 under `YIELD`, nearly all of the difference at the one-year
+point — and the worst *price* error goes the other way, 0.063 to 0.120 per 100.
+Yield weighting buys the short end by giving up the long. Both figures are
+tested, because the first alone reads as free.
+
 ## Development
 
 ```bash

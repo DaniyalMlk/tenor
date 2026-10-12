@@ -1219,3 +1219,130 @@ crossing bonds have nearly the same slope, so a uniform grid is wrong by about
 before. What it does cost is monotone convergence. The uniform grid's error at
 24, 48, 96, 192 and 384 panels runs -2.3e-6, +1.6e-8, +7.7e-7, +4.7e-7,
 +4.5e-8, so a two-point convergence check on it reports the method diverging.
+
+## Phase 23 — A curve that cannot pass through every quote
+
+- [x] Nelson-Siegel and Svensson instantaneous forwards, with the integral as
+      the primitive rather than the average
+- [x] A small-argument series for the hump integral, where the direct form
+      cancels
+- [x] Householder least squares, because the normal equations square a
+      condition number this form supplies
+- [x] A fit to observed zero rates, exact in the levels for each candidate decay
+- [x] A fit to observed bond prices by Gauss-Newton on the analytic Jacobian
+- [x] A decay search that ends in a simplex, because coordinate sweeps stop in
+      Svensson's valley
+- [x] The band of decays that reprice within a tolerance, and the level travel
+      across it
+- [x] `PRICE` and `YIELD` weighting, with what each costs measured in the
+      other's units
+- [x] A route into `DiscountCurve`, so everything downstream works unchanged
+- [x] A `fit` subcommand that prints the band beside the parameters
+
+### What the phase is for
+
+Every other curve here passes exactly through its inputs. `bootstrap` solves one
+pillar per instrument, so the parameter count equals the quote count and the fit
+is an identity. For a swap curve that is right. For a government bond curve it
+is not: thirty bonds of differing coupon, age and liquidity disagree with one
+another, there is no curve that prices all of them, and a construction that
+insists on passing through every quote turns the disagreement into shape.
+
+### The integral, not the average
+
+Every textbook writes the zero rate as the average forward, which puts a
+`(1 - exp(-x)) / x` in it and a division by zero at the anchor. Discounting does
+not want the average; it wants the integral, which is the average times `t` and
+has no division in it at all. So the primitive is the integral and the zero rate
+is derived from it. The integral is zero at `t = 0` with no special case, the
+discount factor is one, and the anchor of every curve stops being a boundary
+case. Checked against a Simpson rule on the forward to 1e-13, with the panel
+count set from the interval because a fixed count at fifty years is a quadrature
+error of 1e-10 — large enough to be mistaken for the closed form's.
+
+The hump integral `1 - (1 + x) exp(-x)` still needs care: it is a difference of
+two terms of order `x` whose answer is of order `x**2`, so the direct form loses
+about `log10(1 / x)` digits. At `x = 1e-9` the series has eight more of them.
+
+### The optimiser is part of the answer
+
+With the decays fixed, the zero rate is linear in the level parameters, so each
+candidate decay costs one least-squares solve and only the one or two decays are
+searched. That was the reason to separate them, and it made the search look
+easy. It is not. Svensson's objective has a diagonal valley — lengthening one
+decay and shortening the other barely moves the curve — and coordinate-wise
+golden section stops at the valley wall. On a Svensson curve fitted to **its own
+exact zero rates** the sweeps return decays of 1.73 and 5.99 against a truth of
+1.6 and 9.0, at a root mean square of 3.2e-05 that reads as a respectable fit.
+The objective at the truth is 1e-17. A simplex over the log decays, started from
+the same point, finds it.
+
+That is the shape of the trap: the failure was not a crash or an obviously wrong
+number, it was a plausible parameter set. Only generating the data from a known
+curve exposes it, which is why recovery is a test here and not a demonstration.
+
+### The curve is determined and its parameters are not
+
+So every fit reports the band of decays that reprice the quotes within a stated
+tolerance, measured by stepping outward from the optimum and bisecting rather
+than read off the search grid. On ten government bonds:
+
+| tolerance | decay band | factor | level travel |
+|---|---|---|---|
+| a tenth of a basis point | 2.36 to 2.63 | 1.11 | 0.0006 to 0.0022 |
+| one basis point | 1.92 to 3.06 | 1.59 | 0.0022 to 0.0069 |
+| ten basis points | 0.10 to 10.77 | 104 | 0.028, then 4,700 |
+
+The last row is the one worth reading. Across a band every point of which
+reprices the same ten quotes within ten basis points, the level parameter moves
+by 0.028 and the slope and hump coefficients move by about 4,700. The long end
+is pinned because that is what `b0` is; the shape is not pinned at all, because
+a decay going to zero and a slope coefficient going to infinity are the same
+curve. Quoting a fitted `b1` as "the slope of the curve" is quoting a number
+nobody measured, and the band is reported so that it cannot be done by accident.
+
+The band is per axis, with the other decays held at the optimum. A joint region
+would be larger, and reporting the smaller of the two as the uncertainty is the
+direction an honest answer errs in.
+
+### What the conditioning costs, measured
+
+Svensson's two humps become the same function as `t1` approaches `t2`, and the
+design matrix's condition number says so: 3.1e+04 with the decays a thousandth
+apart. The normal equations work at the square of that and lose nine digits.
+Recovering a known parameter set, the reflections are wrong by 6.4e-14 and the
+normal equations by 6.6e-10 — four orders of magnitude, on a matrix with four
+columns, which is why the reflections are used at this size.
+
+The condition number is not monotone in the ratio of the decays, either. It is
+3,125 at a ratio of 1.01, falls to 46 at 3.0, and rises again to 239 at 8.0: the
+humps coincide at one end and the second hump leaves the quoted range at the
+other. A sweep that stopped at one end would conclude the form is fine.
+
+And the ill-conditioning reaches further than accuracy. On a near-singular decay
+pair the linear warm start returns level parameters of thousands, discounting
+them overflows a double before Gauss-Newton takes a step, and one step later the
+Jacobian's entries do the same. Both are caught where they happen and score that
+grid point as infeasible, which is what it is.
+
+### Weighting, measured in both directions
+
+Equal weight on price errors is not equal weight on yield errors: a one-year
+bond's yield moves its price a fortieth as much as a thirty-year bond's does, so
+a price-weighted fit spends its accuracy where the prices are sensitive and
+leaves the short end to drift. On the same ten quotes the worst yield error is
+3.94 basis points under price weighting and 2.60 under yield weighting, and
+almost the whole difference is the one-year point: 3.94 against 1.10.
+
+It is not free, and the figure that says so is the one a one-sided measurement
+would leave out. The worst *price* error goes the other way, 0.063 to 0.120 per
+100 — yield weighting buys the short end by giving up the long. Both numbers are
+in the tests, because the improvement reads as unconditional without the second.
+
+### Svensson against Nelson-Siegel, on the same quotes
+
+Nested, so it cannot fit worse, and it does not: 4.2e-05 against 1.7e-04, four
+times better. At a condition number of 1,401 against 23 — sixty times worse. Two
+extra parameters bought a quarter of the residual and most of the
+identifiability, and which of those matters depends on whether the fitted
+parameters are going to be read or only the curve.
