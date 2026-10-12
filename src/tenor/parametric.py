@@ -994,7 +994,17 @@ def fit_bonds(
 
     def run(decays: tuple[float, ...]) -> tuple[tuple[float, ...], float, int]:
         levels = start(decays)
-        prices = model(levels, decays)
+        try:
+            prices = model(levels, decays)
+        except (OverflowError, ValueError) as bad:
+            # The warm start is a linear fit to the bonds' own yields, which on a
+            # near-singular decay pair can return level parameters of thousands.
+            # Discounting on those overflows before the iteration has taken a
+            # single step, so the candidate is infeasible rather than merely bad.
+            raise BadFit(
+                f"discounting overflows at decays {decays!r}, where the linear "
+                f"start returns {levels!r}"
+            ) from bad
         weighted = [
             r * (p - d) for r, p, d in zip(roots, prices, dirty, strict=True)
         ]
@@ -1003,11 +1013,19 @@ def fit_bonds(
         taken = 0
         for _ in range(iterations):
             taken += 1
-            rows = [
-                [r * g for g in gradient]
-                for r, gradient in zip(roots, jacobian(levels, decays), strict=True)
-            ]
-            step = solve_least_squares(rows, [-e for e in weighted])
+            try:
+                rows = [
+                    [r * g for g in gradient]
+                    for r, gradient in zip(roots, jacobian(levels, decays), strict=True)
+                ]
+                step = solve_least_squares(rows, [-e for e in weighted])
+            except (OverflowError, ValueError, BadFit):
+                # The same story as the warm start, one step later: on a
+                # near-singular decay pair the Jacobian's entries pass the
+                # largest double. Stopping here scores the candidate on where it
+                # got to, which is bad enough to be skipped, rather than failing
+                # the whole fit over one grid point.
+                break
             damping = 1.0
             improved = False
             for _ in range(30):

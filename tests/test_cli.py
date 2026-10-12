@@ -2347,3 +2347,193 @@ def test_futures_leaves_the_delivery_option_out_unless_asked(
 ) -> None:
     assert main(["--json", *futures_arguments(basket_file)]) == 0
     assert "delivery_option" not in json.loads(capsys.readouterr().out)
+
+
+# -- fitting a parametric curve to bond prices ---------------------------------
+
+# Ten bonds priced off a known Nelson-Siegel curve with eight cents of quote
+# noise on each, which is what makes the fit a fit rather than an identity.
+GILTS = """# maturity,coupon,clean
+2027-07-15,0.025,98.0789
+2028-07-15,0.03,97.2713
+2029-07-15,0.035,97.1670
+2030-07-15,0.038,96.9468
+2031-07-15,0.04,96.8533
+2033-07-15,0.042,96.8176
+2036-07-15,0.045,98.2188
+2041-07-15,0.046,99.0294
+2046-07-15,0.047,100.2197
+2056-07-15,0.048,102.2727
+"""
+
+
+@pytest.fixture
+def gilt_file(tmp_path: Path) -> str:
+    path = tmp_path / "gilts.csv"
+    path.write_text(GILTS)
+    return str(path)
+
+
+def fit_arguments(path: str) -> list[str]:
+    return [
+        "fit",
+        path,
+        "--reference",
+        "2026-01-15",
+        "--settlement",
+        "2026-01-20",
+        "--basis",
+        "ACT_365F",
+    ]
+
+
+def test_fit_reprices_ten_quotes_with_four_parameters(
+    gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *fit_arguments(gilt_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["quotes"] == 10
+    assert payload["parameters"] == 4
+    assert payload["root_mean_square"] < 5e-4
+    assert len(payload["quote_errors"]) == 10
+    for row in payload["quote_errors"]:
+        assert row["fitted_clean"] == pytest.approx(
+            row["quoted_clean"] + row["price_error"], rel=1e-12
+        )
+    assert payload["worst_quote"] in {row["bond"] for row in payload["quote_errors"]}
+
+
+def test_fit_reports_the_band_the_decay_is_not_pinned_within(
+    gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *fit_arguments(gilt_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    low = payload["decays_lowest"][0]
+    high = payload["decays_highest"][0]
+    assert low < payload["decays"][0] < high
+    assert payload["decay_ratio"] > 1.2
+    assert "The curve is determined; these parameters are not." in payload["reading"]
+
+
+def test_fit_zero_curve_is_monotone_where_the_quotes_make_it_so(
+    gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *fit_arguments(gilt_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    short = [row["zero"] for row in payload["zero_curve"] if row["years"] <= 7]
+    assert short == sorted(short)
+    assert payload["long_rate"] == pytest.approx(payload["levels"][0], rel=1e-12)
+    assert payload["short_rate"] == pytest.approx(
+        payload["levels"][0] + payload["levels"][1], rel=1e-12
+    )
+
+
+def test_fit_settlement_defaults_to_the_reference_date(
+    gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "--json",
+                "fit",
+                gilt_file,
+                "--reference",
+                "2026-01-15",
+                "--basis",
+                "ACT_365F",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["settlement"] == "2026-01-15"
+
+
+def test_fit_svensson_fits_at_least_as_well_as_nelson_siegel(
+    gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--json", *fit_arguments(gilt_file)]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    assert main(["--json", *fit_arguments(gilt_file), "--family", "SVENSSON"]) == 0
+    richer = json.loads(capsys.readouterr().out)
+    assert richer["parameters"] == 6
+    # Nested, so it cannot fit worse, and here it fits four times better — at a
+    # condition number sixty times larger, which is the whole trade.
+    assert richer["root_mean_square"] < plain["root_mean_square"]
+    assert richer["condition"] > 20.0 * plain["condition"]
+
+
+def test_fit_refuses_a_coupon_written_in_per_cent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "percent.csv"
+    path.write_text("2036-07-15,4.5,99.25\n2046-07-15,4.7,100.1\n")
+    assert main(fit_arguments(str(path))) == 2
+    assert "coupons here are decimals" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("2036-07-15,0.045\n", "expected maturity,coupon,clean"),
+        ("2036-07-15,0.045,99.25,2026-01-15,extra\n", "expected maturity,coupon,clean"),
+        ("# nothing but a comment\n", "no bond quotes"),
+    ],
+)
+def test_fit_refuses_a_malformed_quote_file(
+    tmp_path: Path, line: str, message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bad.csv"
+    path.write_text(line)
+    assert main(fit_arguments(str(path))) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_fit_refuses_too_few_quotes_for_the_form(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "two.csv"
+    path.write_text("2036-07-15,0.045,99.25\n2046-07-15,0.047,100.1\n")
+    assert main(fit_arguments(str(path))) == 2
+    assert "cannot be fitted to 2 quotes" in capsys.readouterr().err
+
+
+def test_an_issue_date_before_the_current_period_changes_nothing(
+    tmp_path: Path, gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bullet bond's schedule is generated backwards from its maturity, so the
+    issue date fixes only the length of the first period. Settlement is past
+    that period for every bond in this file, and the fit is therefore bit-for-bit
+    the same with the issue dates spelled out — which is the honest reading of
+    the default rather than a claim that it is delicate."""
+    assert main(["--json", *fit_arguments(gilt_file)]) == 0
+    default = json.loads(capsys.readouterr().out)
+    dated = tmp_path / "dated.csv"
+    dated.write_text(
+        "".join(
+            line if line.startswith("#") or not line.strip() else line.strip() + ",2025-03-07\n"
+            for line in GILTS.splitlines(keepends=True)
+        )
+    )
+    assert main(["--json", *fit_arguments(str(dated))]) == 0
+    assert json.loads(capsys.readouterr().out)["levels"] == default["levels"]
+
+
+def test_an_issue_date_inside_the_current_period_does_change_the_fit(
+    tmp_path: Path, gilt_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """And where the issue date does reach the accrual it reaches the fit. Two
+    days of a 2.5% coupon instead of five is 0.0208 off one quoted clean price,
+    which the fit has to see."""
+    assert main(["--json", *fit_arguments(gilt_file)]) == 0
+    default = json.loads(capsys.readouterr().out)
+    lines = [line for line in GILTS.splitlines() if line and not line.startswith("#")]
+    lines[0] = lines[0] + ",2026-01-18"
+    path = tmp_path / "fresh.csv"
+    path.write_text("\n".join(lines) + "\n")
+    assert main(["--json", *fit_arguments(str(path))]) == 0
+    moved = json.loads(capsys.readouterr().out)
+    assert moved["levels"] != default["levels"]
+    assert moved["quote_errors"][0]["price_error"] != pytest.approx(
+        default["quote_errors"][0]["price_error"], abs=1e-9
+    )
