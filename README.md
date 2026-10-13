@@ -2090,6 +2090,80 @@ point — and the worst *price* error goes the other way, 0.063 to 0.120 per 100
 Yield weighting buys the short end by giving up the long. Both figures are
 tested, because the first alone reads as free.
 
+## A contract nobody discounts, and the measure that leaves in
+
+A deposit, a forward rate agreement and a swap are discounted. A future is
+margined every day in cash, so its settlement rate is a martingale under the
+risk-neutral measure rather than under the measure that discounts its own
+accrual period. The gap is the convexity adjustment, and `Future` has always
+taken it as an argument because the sign is not a modelling choice: margin pays
+the holder when rates rise, which is worth something.
+
+```bash
+tenor convexity quotes.txt --reference 2021-01-04 --basis ACT_365F \
+  --mean-reversion 0.03 --volatility 0.01 \
+  --start 2021-03-17 2021-12-15 2023-03-15 2025-03-19 2028-03-15
+```
+
+A strip rather than a contract, because one contract cannot show the thing worth
+seeing:
+
+```
+start       T1      term    compounded   averaged   ho_lee   term/ho_lee
+2021-03-17  0.197   0.067     0.088        0.054     0.044      1.521
+2021-12-15  0.945   0.650     0.670        0.555     0.563      1.154
+2023-03-15  2.192   2.732     2.753        2.509     2.678      1.020
+2025-03-19  4.205   8.633     8.654        8.251     9.373      0.921
+2028-03-15  7.197  22.200    22.221       21.614    26.807      0.828
+```
+
+`convexity_adjustment` returns the total and the two pieces it is made of;
+`expected_settlement_rate` and `forward_settlement_rate` are the two rates
+behind it. Everything is exact — under Hull-White the short rate is Gaussian and
+both the bond price and the integral of the rate are exponentials of Gaussians,
+so each expectation is a lognormal mean and nothing is expanded.
+
+### `0.5 sigma^2 T1 T2` is low at the front and high at the back
+
+The last column above crosses one between the third contract and the fourth.
+`ho_lee_convexity` is the adjustment to a *continuously* compounded rate, and
+the contract settles on a simply compounded one, so the Jensen term is missing
+— in the zero-reversion limit the two pieces stand in the ratio `1 + T1/L`,
+which is a 50% understatement for a one-year accrual one year out and 4.8% for
+a quarterly one five years out. Pulling the other way, Ho-Lee has no mean
+reversion in it, so it overstates wherever the rate reverts: at `a = 0.3` a
+five-year contract's exact adjustment is 27% of the Ho-Lee figure. The crossover
+sits at `T1 = 5.31` years when `a = 0.01`, 2.82 when `a = 0.03` and 1.39 when
+`a = 0.1`, all three found by bisection rather than read off a grid.
+
+### Three settlement conventions, and only one of them is linear
+
+A term rate fixed at the start and a rate compounded in arrears share a value
+under the end-of-period forward measure and not under the risk-neutral one. The
+compounded one never adjusts less and barely adjusts more: 11.952 basis points
+against 11.931 for a quarterly contract five years out, on a flat 4% curve at a
+hundred basis points.
+
+An arithmetic average is linear in the rate, so curvature contributes nothing
+and its whole adjustment is the drift, 11.285 basis points at the same point.
+Its *reference* is also different, and that matters more. The simple forward
+over a quarterly window five years out sits 2.01 basis points above the
+continuously compounded forward over the same window, where the convexity
+adjustment one year out is 0.73. Taking the wrong reference for an averaging
+contract is a larger error than ignoring convexity altogether anywhere inside
+two years, so `forward_settlement_rate` picks it from the convention.
+
+### Measured on a curve, not on a quote
+
+Twenty quarterly contracts generated from a known flat 4% curve, then rebuilt
+from the prices alone. With the adjustment supplied the bootstrap returns the
+curve it started from. With it left at zero the five-year zero comes out 3.99
+basis points high, and the error accumulates monotonically along the strip —
+0.20, 0.74, 1.56, 2.65, 3.99 at one through five years — where the largest
+single adjustment in the strip is 11.6. The curve error is neither the largest
+adjustment nor the first one, which is why checking one contract would have been
+reassuring and wrong.
+
 ## Development
 
 ```bash
