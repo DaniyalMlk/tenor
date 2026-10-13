@@ -1346,3 +1346,98 @@ times better. At a condition number of 1,401 against 23 — sixty times worse. T
 extra parameters bought a quarter of the residual and most of the
 identifiability, and which of those matters depends on whether the fitted
 parameters are going to be read or only the curve.
+
+## Phase 24 — A contract margined daily, and the measure that leaves it in
+
+- [x] The risk-neutral mean of the short rate, checked against a quadrature of
+      the model's own drift rather than against itself
+- [x] The mean and variance of the integrated rate, with the variance split into
+      what was already uncertain and what happens inside the window
+- [x] A small-argument series for the integrated drift, where three terms of
+      size `t` sum to one of size `a^2 t^3 / 3`
+- [x] All three settlement conventions: a term rate, a rate compounded in
+      arrears, and an arithmetic average
+- [x] The reference chosen by the convention, because an average lines up with
+      the continuous forward and not the simple one
+- [x] The adjustment split into the drift piece every convention shares and the
+      Jensen piece the average does not have
+- [x] The Ho-Lee approximation measured, with the range in which it is safe
+      stated as a number and the crossover found by bisection
+- [x] A futures strip bootstrapped with and without the adjustment, so the curve
+      impact is measured
+- [x] A `convexity` subcommand that prints a strip rather than a contract
+
+### What the phase is for
+
+`Future` has taken a `convexity` argument since Phase 1 and refused a negative
+one. Nothing computed it except `ho_lee_convexity`, whose docstring claimed that
+any one-factor model with the same short-rate volatility agrees with it to first
+order. The claim had never been measured, and it is wrong in both directions
+inside the range of a single futures strip.
+
+### The error changes sign, so no tolerance makes it safe
+
+The exact three-month adjustment against the Ho-Lee figure, on a flat 4% curve
+at a hundred basis points of absolute rate volatility:
+
+| `T1` | `a = 0.01` | `a = 0.03` | `a = 0.3` |
+| ---- | ---------- | ---------- | --------- |
+| 0.25y | +50.8% | +49.4% | +32.2% |
+| 1y    | +19.8% | +17.1% | -13.7% |
+| 5y    | +0.6%  | -9.1%  | -72.3% |
+| 10y   | -6.4%  | -23.0% | -89.7% |
+
+Two effects pull opposite ways. Ho-Lee's formula is the adjustment to a
+*continuously* compounded rate, and the contract settles on a simply compounded
+one, so it is missing the Jensen term — in the zero-reversion limit the two
+pieces stand in the ratio `1 + T1/L`, which understates by half at a one-year
+accrual one year out. And Ho-Lee has no mean reversion in it, so it overstates
+wherever the rate is actually reverting. The crossover, bisected rather than read
+off the grid above, sits at `T1 = 5.31` years when `a = 0.01`, 2.82 when
+`a = 0.03` and 1.39 when `a = 0.1`.
+
+### Three conventions, and the one that is linear
+
+A term rate and a rate compounded in arrears have the same value under the
+end-of-period forward measure — the telescoping identity Phase 21 is built on —
+and different values under the risk-neutral one. The compounded adjustment is
+never the smaller of the two and is barely the larger: 11.952 basis points
+against 11.931 for a three-month contract five years out, because the extra path
+dependence inside a quarter is worth very little.
+
+The average is a different matter. It is linear in the short rate, so curvature
+contributes nothing and its entire adjustment is the drift: 11.285 basis points
+at the same point, against the compounded one's drift piece of 11.400 — not
+equal, because the compounded contract's drift is passed through the simple
+compounding its settlement carries and the average's is not. Its reference is
+different too, and that turns out to matter more than its adjustment. The simple
+forward over a quarterly window five years out sits 2.01 basis points above the
+continuously compounded forward over the same window, where the convexity
+adjustment one year out is 0.73. Taking the wrong reference for an averaging
+contract is a larger error than ignoring convexity altogether anywhere inside
+two years.
+
+### What it does to a curve, rather than to a quote
+
+Twenty quarterly contracts generated from a known flat 4% curve, then rebuilt
+from the prices alone. With the adjustment supplied the bootstrap returns the
+curve it started from to better than a ten-thousandth of a basis point. With it
+left at zero — which is what treating a futures rate as a forward rate does —
+the five-year zero comes out 3.99 basis points high, and the error grows
+monotonically along the strip: 0.20, 0.74, 1.56, 2.65, 3.99 at one through five
+years. The largest single contract adjustment in that strip is 11.6 basis
+points, so the curve error is neither the largest adjustment nor the first one;
+it is an accumulation, which is why measuring it on one contract would have
+been reassuring and wrong.
+
+### A cancellation that hides the whole check
+
+The integrated drift `int (1 - e^-au)^2 du` has the antiderivative
+`t - 2 B(t) + (1 - e^-2at) / 2a`: three terms of size `t` whose sum is of size
+`a^2 t^3 / 3`. At `a t = 1e-5` that is eleven digits gone, and the zero-reversion
+limit the module is checked against is precisely the place where `a t` is small.
+Before the series was written the compounded and averaged limits appeared to
+converge to the wrong numbers — 0.56 and 0.40 of the limit at one point, 1.03 at
+another, non-monotone in `a` — which reads like an algebra error rather than a
+conditioning one. The term convention was unaffected and looked fine throughout,
+which is what made it convincing.

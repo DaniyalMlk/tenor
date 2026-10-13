@@ -2537,3 +2537,54 @@ def test_an_issue_date_inside_the_current_period_does_change_the_fit(
     assert moved["quote_errors"][0]["price_error"] != pytest.approx(
         default["quote_errors"][0]["price_error"], abs=1e-9
     )
+
+
+def test_the_convexity_command_reports_all_three_conventions(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """And the sign change in the Ho-Lee ratio down a single strip, which is the
+    whole reason the subcommand takes a strip rather than one contract."""
+    assert (
+        main(
+            [
+                "--json",
+                "convexity",
+                *shared(quote_file),
+                "--start",
+                "2021-03-17",
+                "2023-03-15",
+                "2028-03-15",
+                "--mean-reversion",
+                "0.03",
+                "--volatility",
+                "0.01",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model"] == {"mean_reversion": 0.03, "volatility": 0.01}
+    assert payload["accrual_basis"] == "ACT/360"
+    rows = payload["contracts"]
+    assert len(rows) == 3
+    ratios = [row["term_over_ho_lee"] for row in rows]
+    assert ratios[0] > 1.0 > ratios[-1]
+    assert ratios == sorted(ratios, reverse=True)
+    for row in rows:
+        assert row["end"] > row["start"]
+        assert row["compounded"]["adjustment"] >= row["term"]["adjustment"] > 0.0
+        assert row["averaged"]["jensen"] == 0.0
+        # The averaging convention is measured from a different forward, and the
+        # gap between the two references is printed rather than implied.
+        assert row["averaged"]["forward_rate"] == pytest.approx(row["continuous_forward"])
+        assert row["term"]["forward_rate"] != row["averaged"]["forward_rate"]
+        assert row["term"]["price"] == pytest.approx(100.0 * (1.0 - row["term"]["futures_rate"]))
+
+
+def test_the_convexity_command_needs_both_model_parameters(quote_file: str) -> None:
+    with pytest.raises(SystemExit):
+        main(["convexity", *shared(quote_file), "--start", "2021-03-17", "--volatility", "0.01"])
+    with pytest.raises(SystemExit):
+        main(
+            ["convexity", *shared(quote_file), "--start", "2021-03-17", "--mean-reversion", "0.03"]
+        )
