@@ -451,8 +451,8 @@ def convexity_adjustment(
     comes from the curvature of the map from the rate to the settlement amount,
     and is what the averaging convention does not have. In the zero-reversion
     limit the two stand in the ratio ``1 + T1/L``, and the exact figures track
-    it closely: 21.0 for a three-month contract five years out, 6.06 for a
-    one-year accrual five years out and 2.00 for a one-year accrual one year
+    it closely: 21.03 for a three-month contract five years out, 6.06 for a
+    one-year accrual five years out and 2.01 for a one-year accrual one year
     out. Ho-Lee's formula is the drift piece alone, so that ratio is also the
     size of what it leaves out.
 
