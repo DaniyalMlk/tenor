@@ -52,6 +52,11 @@ from .cms import (
     Strike,
     measure_error,
 )
+from .convexity import (
+    Settlement,
+    continuous_forward_rate,
+    convexity_adjustment,
+)
 from .credit import (
     CreditDefaultSwap,
     bootstrap_hazards,
@@ -103,7 +108,7 @@ from .inflation import (
     implied_inflation_from_price,
     index_accretion,
 )
-from .instruments import Deposit, Future, Instrument, Swap
+from .instruments import Deposit, Future, Instrument, Swap, ho_lee_convexity
 from .lattice import (
     Exercise,
     Lattice,
@@ -1468,6 +1473,69 @@ def run_hullwhite(arguments: argparse.Namespace) -> dict[str, object]:
             ),
         }
     return payload
+
+
+def run_convexity(arguments: argparse.Namespace) -> dict[str, object]:
+    """A futures strip's convexity adjustment, all three conventions at once.
+
+    The row to read is ``term_over_ho_lee``. It is above one at the front of the
+    strip, because the textbook formula adjusts a continuously compounded rate
+    and the contract settles on a simply compounded one, and below one at the
+    back, because the textbook formula has no mean reversion in it. Where it
+    crosses depends on the reversion speed, so a strip printed at one speed says
+    nothing about another.
+
+    The three conventions differ by more than their adjustments. The averaging
+    one is measured from the continuously compounded forward rather than the
+    simple one, and at a quarterly accrual the gap between those two references
+    is larger than the adjustment anywhere inside two years, which is why the
+    forward is printed beside each number rather than once at the top.
+    """
+    discounting = build(arguments)
+    curve = discounting.curve
+    model = HullWhite(a=arguments.mean_reversion, sigma=arguments.volatility)
+    accrual_basis = _basis(arguments.accrual_basis)
+
+    contracts: list[dict[str, object]] = []
+    for text in arguments.start:
+        start = date.fromisoformat(text)
+        end = add_months(start, arguments.months, keep_end_of_month=False)
+        expiry = curve.time_to(start)
+        closing = curve.time_to(end)
+        accrual = year_fraction(start, end, accrual_basis)
+        row: dict[str, object] = {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "expiry_years": expiry,
+            "window_years": closing - expiry,
+            "accrual": accrual,
+            "continuous_forward": continuous_forward_rate(curve, expiry, closing),
+        }
+        for settlement in Settlement:
+            adjustment = convexity_adjustment(
+                curve, model, expiry, closing, accrual=accrual, settlement=settlement
+            )
+            row[settlement.value] = {
+                "futures_rate": adjustment.futures,
+                "forward_rate": adjustment.forward,
+                "adjustment": adjustment.total,
+                "drift": adjustment.drift,
+                "jensen": adjustment.jensen,
+                "price": 100.0 * (1.0 - adjustment.futures),
+            }
+        textbook = ho_lee_convexity(model.sigma, expiry, closing)
+        row["ho_lee"] = textbook
+        term = convexity_adjustment(
+            curve, model, expiry, closing, accrual=accrual, settlement=Settlement.TERM
+        )
+        row["term_over_ho_lee"] = term.total / textbook if textbook > 0.0 else float("nan")
+        contracts.append(row)
+
+    return {
+        "model": {"mean_reversion": model.a, "volatility": model.sigma},
+        "accrual_basis": accrual_basis.value,
+        "contracts": contracts,
+    }
 
 
 def run_fx(arguments: argparse.Namespace) -> dict[str, object]:
@@ -3338,6 +3406,57 @@ def parser() -> argparse.ArgumentParser:
         help="also report the annuity-measure volatilities the price implies",
     )
     hullwhite.set_defaults(run=run_hullwhite)
+
+    convexity = subcommands.add_parser(
+        "convexity",
+        help="the convexity adjustment for a strip of rate futures",
+        description=(
+            "Computes the gap between a margined future's settlement rate and "
+            "the forward the same window implies, exactly, under Hull-White. "
+            "All three settlement conventions are reported for every contract "
+            "-- a term rate fixed at the start, a rate compounded in arrears "
+            "and an arithmetic average -- together with the Ho-Lee figure and "
+            "the ratio of the exact term adjustment to it. That ratio is above "
+            "one at the front of a strip and below one at the back, so a strip "
+            "is the shortest way to see that the approximation's error changes "
+            "sign."
+        ),
+    )
+    shared(convexity)
+    convexity.add_argument(
+        "--start",
+        nargs="+",
+        required=True,
+        metavar="DATE",
+        help="each contract's first accrual date, ISO",
+    )
+    convexity.add_argument(
+        "--months",
+        type=int,
+        default=3,
+        help="the accrual window's length in months; 3 for a quarterly contract",
+    )
+    convexity.add_argument(
+        "--mean-reversion",
+        dest="mean_reversion",
+        type=float,
+        required=True,
+        help="the model's a, in reciprocal years",
+    )
+    convexity.add_argument(
+        "--volatility",
+        type=float,
+        required=True,
+        help="the model's sigma, absolute: 0.01 for a hundred basis points a year",
+    )
+    convexity.add_argument(
+        "--accrual-basis",
+        dest="accrual_basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+        help="the day count the contract accrues on, which need not be the curve's",
+    )
+    convexity.set_defaults(run=run_convexity)
 
     bermudan = subcommands.add_parser(
         "bermudan",

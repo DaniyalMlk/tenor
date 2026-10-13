@@ -24,6 +24,7 @@ from datetime import date
 
 import pytest
 
+from tenor.bootstrap import bootstrap
 from tenor.convexity import (
     Adjustment,
     RateMoments,
@@ -40,9 +41,9 @@ from tenor.convexity import (
     term_growth_moments,
 )
 from tenor.curve import DiscountCurve, flat_curve
-from tenor.daycount import Basis
+from tenor.daycount import Basis, year_fraction
 from tenor.hullwhite import BadModel, HullWhite
-from tenor.instruments import ho_lee_convexity
+from tenor.instruments import Deposit, Future, ho_lee_convexity
 
 REFERENCE = date(2024, 1, 1)
 RATE = 0.04
@@ -712,3 +713,76 @@ def test_a_non_positive_accrual_is_refused(accrual: float) -> None:
         expected_settlement_rate(curve, HullWhite(0.03, 0.01), 1.0, 1.25, accrual=accrual)
     with pytest.raises(BadModel, match="accrual year fraction"):
         forward_settlement_rate(curve, 1.0, 1.25, accrual=accrual)
+
+
+# -- the adjustment inside a bootstrap ----------------------------------------
+
+
+def _quarterly_strip(count: int) -> list[date]:
+    starts = [date(2024, 3, 20)]
+    while len(starts) < count:
+        previous = starts[-1]
+        year, month = previous.year, previous.month + 3
+        if month > 12:
+            year, month = year + 1, month - 12
+        starts.append(date(year, month, previous.day))
+    return starts
+
+
+def test_the_adjustment_recovers_the_curve_the_quotes_came_from() -> None:
+    """The end-to-end check, with the curve known in advance.
+
+    A flat 4% curve and a model generate futures *prices*. The curve is then
+    thrown away and rebuilt from those prices twice: once with the adjustment
+    supplied and once with it left at zero, which is what a bootstrapper that
+    treats a futures rate as a forward rate does. The adjusted build returns the
+    curve it started from; the naive one is biased high, and the bias
+    accumulates down the strip rather than staying at the size of one
+    adjustment — 3.99 basis points on the five-year zero where the largest
+    single contract adjustment in the strip is 11.6.
+    """
+    truth = level()
+    model = HullWhite(0.03, 0.01)
+    starts = _quarterly_strip(20)
+
+    quoted: list[Future] = []
+    adjusted: list[Future] = []
+    largest = 0.0
+    for start in starts:
+        year, month = start.year, start.month + 3
+        if month > 12:
+            year, month = year + 1, month - 12
+        end = date(year, month, start.day)
+        expiry, closing = truth.time_to(start), truth.time_to(end)
+        accrual = year_fraction(start, end, Basis.ACT_360)
+        rate = expected_settlement_rate(truth, model, expiry, closing, accrual=accrual)
+        adjustment = convexity_adjustment(
+            truth, model, expiry, closing, accrual=accrual
+        ).total
+        largest = max(largest, adjustment)
+        price = 100.0 * (1.0 - rate)
+        label = start.isoformat()
+        quoted.append(Future(start, end, price, Basis.ACT_360, label=label))
+        adjusted.append(
+            Future(start, end, price, Basis.ACT_360, convexity=adjustment, label=label)
+        )
+
+    stub_accrual = year_fraction(REFERENCE, starts[0], Basis.ACT_360)
+    stub_rate = (1.0 / truth.discount_at(truth.time_to(starts[0])) - 1.0) / stub_accrual
+    stub = Deposit(REFERENCE, starts[0], stub_rate, Basis.ACT_360, "stub")
+
+    naive = bootstrap(REFERENCE, [stub, *quoted], basis=Basis.ACT_365F)
+    fixed = bootstrap(REFERENCE, [stub, *adjusted], basis=Basis.ACT_365F)
+    assert naive.worst_error < 1e-12
+    assert fixed.worst_error < 1e-12
+
+    def zero_error(built: DiscountCurve, time: float) -> float:
+        return (-math.log(built.discount_at(time)) / time - RATE) * 1e4
+
+    assert largest * 1e4 == pytest.approx(11.64, abs=0.01)
+    for time in (1.0, 2.0, 3.0, 4.0, 5.0):
+        assert abs(zero_error(fixed.curve, time)) < 1e-6
+    naive_errors = [zero_error(naive.curve, time) for time in (1.0, 2.0, 3.0, 4.0, 5.0)]
+    assert naive_errors == sorted(naive_errors)
+    assert all(error > 0.0 for error in naive_errors)
+    assert naive_errors[-1] == pytest.approx(3.990, abs=0.01)
