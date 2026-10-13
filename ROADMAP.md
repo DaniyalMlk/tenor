@@ -1401,13 +1401,15 @@ off the grid above, sits at `T1 = 5.31` years when `a = 0.01`, 2.82 when
 A term rate and a rate compounded in arrears have the same value under the
 end-of-period forward measure — the telescoping identity Phase 21 is built on —
 and different values under the risk-neutral one. The compounded adjustment is
-never the smaller of the two and is barely the larger: 11.788 basis points
-against 11.768 for a three-month contract five years out, because the extra path
+never the smaller of the two and is barely the larger: 11.952 basis points
+against 11.931 for a three-month contract five years out, because the extra path
 dependence inside a quarter is worth very little.
 
 The average is a different matter. It is linear in the short rate, so curvature
 contributes nothing and its entire adjustment is the drift: 11.285 basis points
-at the same point, the compounded one's drift piece exactly. Its reference is
+at the same point, against the compounded one's drift piece of 11.400 — not
+equal, because the compounded contract's drift is passed through the simple
+compounding its settlement carries and the average's is not. Its reference is
 different too, and that turns out to matter more than its adjustment. The simple
 forward over a quarterly window five years out sits 2.01 basis points above the
 continuously compounded forward over the same window, where the convexity

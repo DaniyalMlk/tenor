@@ -786,3 +786,19 @@ def test_the_adjustment_recovers_the_curve_the_quotes_came_from() -> None:
     assert naive_errors == sorted(naive_errors)
     assert all(error > 0.0 for error in naive_errors)
     assert naive_errors[-1] == pytest.approx(3.990, abs=0.01)
+
+
+def test_the_three_conventions_on_one_contract_are_the_documented_numbers() -> None:
+    """A three-month contract five years out, on a flat 4% curve at a hundred basis
+    points: 11.931, 11.952 and 11.285 basis points, with the average's whole
+    adjustment being its drift."""
+    curve = level()
+    model = HullWhite(0.03, 0.01)
+    figures = {
+        settlement: convexity_adjustment(curve, model, 5.0, 5.25, settlement=settlement)
+        for settlement in Settlement
+    }
+    assert figures[Settlement.TERM].total * 1e4 == pytest.approx(11.931, abs=1e-3)
+    assert figures[Settlement.COMPOUNDED].total * 1e4 == pytest.approx(11.952, abs=1e-3)
+    assert figures[Settlement.AVERAGED].total * 1e4 == pytest.approx(11.285, abs=1e-3)
+    assert figures[Settlement.COMPOUNDED].drift * 1e4 == pytest.approx(11.400, abs=1e-3)
