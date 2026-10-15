@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from tenor.assetswap import asset_swap_spread
 from tenor.bond import Bond
 from tenor.bootstrap import bootstrap
 from tenor.cli import (
@@ -1380,7 +1381,7 @@ def cms_arguments(curves: tuple[str, str]) -> list[str]:
         "--forecast",
         forecast,
         "--expiry",
-        "2031-01-15",
+        "2031-01-05",
         "--tenor-years",
         "10",
         "--delay-months",
@@ -1829,7 +1830,7 @@ def bermudan_arguments(curves: tuple[str, str]) -> list[str]:
         "--basis",
         "ACT_365F",
         "--expiry",
-        "2031-01-15",
+        "2031-01-05",
         "2032-01-15",
         "2033-01-15",
         "2034-01-15",
@@ -2588,3 +2589,81 @@ def test_the_convexity_command_needs_both_model_parameters(quote_file: str) -> N
         main(
             ["convexity", *shared(quote_file), "--start", "2021-03-17", "--mean-reversion", "0.03"]
         )
+
+
+def test_the_assetswap_command_agrees_with_the_library(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "--json",
+        "assetswap",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.04",
+        "--quote",
+        "90",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    curve = bootstrap(REFERENCE, parse_quotes(QUOTES, REFERENCE), basis=Basis.ACT_365F).curve
+    bond = Bond(REFERENCE, date(2031, 1, 5), 0.04, Frequency.SEMI_ANNUAL, Basis.THIRTY_360_BOND)
+    struck = asset_swap_spread(bond, 90.0, curve, REFERENCE)
+    assert payload["par_par_spread"] == pytest.approx(struck.spread, rel=1e-9)
+    assert payload["proceeds_over_par_par"] == pytest.approx(100.0 / 90.0, rel=1e-9)
+    assert payload["curve_component"] + payload["price_component"] == pytest.approx(
+        payload["par_par_spread"], rel=1e-9
+    )
+    assert abs(payload["residual"]) < 1e-13
+    assert "legs" not in payload
+
+
+def test_the_assetswap_command_defaults_to_the_curve_price(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "--json",
+        "assetswap",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.04",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["clean"] == pytest.approx(payload["curve_price"], rel=1e-12)
+    assert abs(payload["par_par_spread"]) < 1e-15
+    assert abs(payload["proceeds_spread"]) < 1e-15
+
+
+def test_the_assetswap_command_prints_what_the_leg_is_worth(
+    quote_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = [
+        "--json",
+        "assetswap",
+        *shared(quote_file),
+        "--maturity",
+        "2031-01-05",
+        "--coupon",
+        "0.04",
+        "--quote",
+        "90",
+        "--legs",
+        "--leg-frequency",
+        "ANNUAL",
+    ]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["leg"].startswith("ANNUAL ACT_360")
+    rows = payload["legs"]
+    assert len(rows) == 6
+    money = [row["spread"] * row["annuity"] for row in rows]
+    for one in money[1:]:
+        assert one == pytest.approx(money[0], rel=1e-12)
+    assert payload["leg_range"] == pytest.approx(
+        max(row["spread"] for row in rows) - min(row["spread"] for row in rows)
+    )
+    assert payload["leg_range"] * 10000 > 5.0
