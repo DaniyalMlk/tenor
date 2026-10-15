@@ -40,6 +40,13 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
+from .assetswap import (
+    Quotation,
+    asset_swap_leg,
+    asset_swap_spread,
+    compare_spreads,
+    leg_sensitivity,
+)
 from .bermudan import BermudanSwaption, bermudan_swaption, coterminal_europeans
 from .bond import Accrual, Bond
 from .bootstrap import Bootstrapped, bootstrap
@@ -734,6 +741,66 @@ def run_price(arguments: argparse.Namespace) -> dict[str, object]:
         result["quoted_clean"] = arguments.quote
         result["z_spread"] = spread.value
         result["i_spread"] = i_spread(bond, arguments.quote, built.curve, reference)
+    return result
+
+
+def run_assetswap(arguments: argparse.Namespace) -> dict[str, object]:
+    built = build(arguments)
+    reference = built.curve.reference
+    bond = _bond(arguments, reference)
+    leg = asset_swap_leg(
+        bond,
+        reference,
+        frequency=Frequency[arguments.leg_frequency.upper()],
+        basis=_basis(arguments.leg_basis),
+    )
+    quote = arguments.quote
+    if quote is None:
+        # No price given means the bond is on the curve, and the answer is
+        # zero. Printing that is worth more than refusing: it is the check
+        # that the structure has been set up the way the caller thinks.
+        quote = bond.price_from_curve(built.curve, reference) - bond.accrued(reference)
+    par_par = asset_swap_spread(bond, quote, built.curve, reference, leg=leg)
+    proceeds = asset_swap_spread(
+        bond, quote, built.curve, reference, leg=leg, convention=Quotation.PROCEEDS
+    )
+    measured = compare_spreads(bond, quote, built.curve, reference, leg=leg)
+    result: dict[str, object] = {
+        "bond": bond.name,
+        "clean": quote,
+        "dirty": par_par.dirty_price,
+        "curve_price": par_par.curve_price,
+        "leg": f"{leg.frequency.name} {leg.basis.name} to {leg.maturity.isoformat()}",
+        "annuity": par_par.annuity,
+        "par_par_spread": par_par.spread,
+        "proceeds_spread": proceeds.spread,
+        "proceeds_over_par_par": measured.proceeds_over_par_par,
+        "curve_component": par_par.curve_component,
+        "price_component": par_par.price_component,
+        "z_spread": measured.z_spread,
+        "i_spread": measured.i_spread,
+        "par_par_less_z": measured.par_par_less_z,
+        "residual": par_par.residual,
+    }
+    if arguments.legs:
+        conventions = tuple(
+            (frequency, basis)
+            for frequency in (Frequency.QUARTERLY, Frequency.SEMI_ANNUAL, Frequency.ANNUAL)
+            for basis in (Basis.ACT_360, Basis.ACT_365F)
+        )
+        rows = leg_sensitivity(bond, quote, built.curve, reference, conventions)
+        result["legs"] = [
+            {
+                "frequency": row.frequency.name,
+                "basis": row.basis.name,
+                "annuity": row.annuity,
+                "spread": row.spread,
+            }
+            for row in rows
+        ]
+        result["leg_range"] = max(row.spread for row in rows) - min(
+            row.spread for row in rows
+        )
     return result
 
 
@@ -2504,6 +2571,30 @@ def parser() -> argparse.ArgumentParser:
     bond_arguments(price)
     price.add_argument("--quote", type=float, help="a clean price, to extract spreads against")
     price.set_defaults(run=run_price)
+
+    assetswap = subcommands.add_parser(
+        "assetswap", help="the spread on the leg the bond is actually swapped into"
+    )
+    shared(assetswap)
+    bond_arguments(assetswap)
+    assetswap.add_argument("--quote", type=float, help="a clean price; the curve's own if omitted")
+    assetswap.add_argument(
+        "--leg-frequency",
+        default=Frequency.QUARTERLY.name,
+        choices=[one.name for one in Frequency],
+        help="the floating leg's frequency, which the quote depends on",
+    )
+    assetswap.add_argument(
+        "--leg-basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+    )
+    assetswap.add_argument(
+        "--legs",
+        action="store_true",
+        help="print the same money divided by six different annuities",
+    )
+    assetswap.set_defaults(run=run_assetswap)
 
     risk = subcommands.add_parser("risk", help="break the risk down two ways")
     shared(risk)

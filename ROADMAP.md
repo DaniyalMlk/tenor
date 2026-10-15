@@ -1441,3 +1441,90 @@ converge to the wrong numbers — 0.56 and 0.40 of the limit at one point, 1.03 
 another, non-monotone in `a` — which reads like an algebra error rather than a
 conditioning one. The term convention was unaffected and looked fine throughout,
 which is what made it convincing.
+
+## Phase 25 — The spread the bond is actually swapped into
+
+- [x] A floating leg described independently of the bond, because in an asset
+      swap it is
+- [x] The par-par spread, derived from the package's value rather than quoted
+      from a formula, so the cancellation it rests on is visible
+- [x] The proceeds spread, with the same money and a different notional
+- [x] Both in closed form, and the inverse in closed form too, including the
+      convention where the price appears in the notional
+- [x] The quote split into the bond's coupon against the curve and its distance
+      from par
+- [x] The residual the textbook cancellation leaves when the leg's rolled
+      boundaries and the bond's part company, carried on the result
+- [x] A table of leg conventions, which is one amount of money and several
+      annuities
+- [x] An `assetswap` subcommand, and the structure in the worked example
+
+### What the phase is for
+
+Phase 6 measures a bond against the curve two ways and neither is what a credit
+desk transacts on. That one is the asset swap spread: what a buyer receives
+over the floating index once the fixed coupons have been handed to a swap
+counterparty. It is not a relabelling of the Z-spread, because it answers a
+question about a structure rather than about a discounting convention, and the
+structure has conventions of its own.
+
+### Both conventions are the same money, and they are not the same number
+
+Writing the package's value at settlement and setting it to zero gives
+`(curve price - market price) / (100 * annuity)` for a par-par swap and the
+same numerator over `price * annuity` for a proceeds one. So the two differ by
+exactly `100 / dirty price`, verified here to a relative 1e-15 rather than
+asserted. A bond at 80 quotes **478.4bp** on the proceeds convention against
+**391.8bp** par-par — 22.1% wider on the same bond, the same curve and the same
+day. At 120 it is 18.0% narrower. They coincide at exactly one price, a dirty
+price of par, where the distance-from-par component of the quote is zero.
+
+### Exactly affine in the price, where the Z-spread is convex
+
+Every price enters the par-par spread once, so the spread is affine in it with
+slope `-1/(100 * annuity)`; as a second difference that is zero to 2.8e-15
+basis points per squared price point. The Z-spread's second difference over the
+same bond is 0.222 at a price of 80, 0.135 at 100 and 0.091 at 120.
+
+Different shapes means **neither bounds the other**. On a 4% twelve-year bond
+the two agree at exactly two prices — 104.661, and 116.435 where both are zero
+because the bond is on the curve — and the gap has a different sign on either
+side: 61.5bp below the Z-spread at a price of 80, 1.9bp above it at 110.
+
+### It is not a credit spread, and the size of that is measurable
+
+Five bonds on the same curve with the same maturity and the **same Z-spread**,
+differing only in coupon:
+
+| coupon | price | asset swap |
+|---|---|---|
+| 1% | 80.94 | 86.8bp |
+| 2% | 89.63 | 91.6bp |
+| 4% | 107.02 | 101.2bp |
+| 6% | 124.41 | 110.9bp |
+| 8% | 141.80 | 120.5bp |
+
+33.7bp of dispersion across bonds that are by construction equally risky,
+monotone in the coupon, and widening with the level: 65.2bp at a Z-spread of
+200bp and 94.8bp at 300bp.
+
+### The leg's convention is worth basis points, and nobody writes it down
+
+The structure's value does not depend on the leg's frequency or day count at
+all — the leg telescopes — so every convention amortises the same money and
+differs only in the annuity it divides by. On the 4% bond at 90: 284.25bp
+quarterly ACT/360, 285.04bp semi-annual, 286.63bp annual, 288.20bp quarterly
+ACT/365F, 289.13bp semi-annual 30/360. A range of 4.87bp on a 284bp quote.
+
+### Where the textbook formula is exact, and where it is not
+
+The cancellation assumes the leg accrues from settlement to the bond's own
+redemption payment. When it does, the residual is 3.6e-15. When it does not:
+
+- one holiday in the leg's calendar that is not in the bond's, landing on the
+  redemption payment — residual 0.0073 price points, **0.08bp** of spread;
+- a leg struck to start six months forward — residual -0.120, **1.37bp**.
+
+Under a mismatch the `100 / price` relation between the conventions also stops
+holding exactly, 1.0882953 against 1.0882709 in the holiday case. Both numbers
+are known only because the residual is computed rather than assumed away.
