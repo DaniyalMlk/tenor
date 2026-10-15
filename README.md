@@ -14,9 +14,9 @@ calendars and payment schedules; discount curves, compounding conventions and
 three interpolation schemes; a bootstrapper over deposits, futures and par
 swaps; bond analytics — price, yield, duration, convexity and basis point
 values; curve risk — key rate durations, shape shifts and
-instrument-by-instrument risk; spreads — Z-spread, a calibrated short rate
-lattice, American exercise and option-adjusted spread; and a command line with
-a worked example.
+instrument-by-instrument risk; spreads — Z-spread, I-spread, asset swap spreads
+in both conventions, a calibrated short rate lattice, American exercise and
+option-adjusted spread; and a command line with a worked example.
 
 ## Installing
 
@@ -768,6 +768,42 @@ None of that is spread. It is a single benchmark point at the maturity being
 compared against coupons discounted across the whole curve, and it grows with
 maturity and with distance from par. On a flat curve every figure is zero to
 two hundredths of a basis point, which is why a flat curve tests nothing here.
+
+### The asset swap spread is not a credit spread, and the gap is measurable
+
+Z-spread and I-spread both measure a bond against the curve. Neither is the
+number a credit desk transacts on, which is the **asset swap spread**: what a
+buyer receives over the floating index once the bond's fixed coupons have been
+handed to a swap counterparty.
+
+It is a question about a structure, so it carries the structure's conventions.
+A par-par buyer pays 100 and receives the index plus a spread on 100; a
+proceeds buyer pays the market price and receives it on that. The two differ by
+exactly `100 / dirty price` — a bond at 80 quotes 478.4bp on one convention and
+391.8bp on the other, 22.1% apart. They coincide at one price only, a dirty
+price of par.
+
+And the spread moves with the coupon even when the credit does not. Five bonds
+on one curve, same maturity, **same Z-spread of 100bp**:
+
+| coupon | price | asset swap |
+|---|---|---|
+| 1% | 80.94 | 86.8bp |
+| 2% | 89.63 | 91.6bp |
+| 4% | 107.02 | 101.2bp |
+| 6% | 124.41 | 110.9bp |
+| 8% | 141.80 | 120.5bp |
+
+33.7bp across bonds that are by construction equally risky, widening to 94.8bp
+at a Z-spread of 300bp. `asset_swap_spread` splits the quote into the part that
+is the bond's coupon against the curve and the part that is only its distance
+from par, which is where that dispersion comes from.
+
+The floating leg's own convention is worth basis points too. The structure's
+value does not depend on the leg's frequency or day count — the leg telescopes
+— so every convention amortises the same money and differs only in the annuity
+it divides by: 284.25bp quarterly ACT/360 up to 289.13bp semi-annual 30/360 on
+the same bond at the same price. `leg_sensitivity` prints that table.
 
 ### Z-spread minus OAS is what the option costs
 
