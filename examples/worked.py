@@ -29,9 +29,11 @@ from tenor import (
     Interpolation,
     Lattice,
     Swap,
+    asset_swap_spread,
     bootstrap,
     buckets_from,
     cheapest_to_deliver,
+    compare_spreads,
     conversion_factor,
     day_count,
     delivery_switch,
@@ -39,9 +41,12 @@ from tenor import (
     instrument_risk,
     key_rates,
     lattice_price,
+    leg_sensitivity,
     level,
     option_adjusted_spread,
     option_cost,
+    par_par_spread,
+    proceeds_spread,
     shape_duration,
 )
 from tenor.spread import i_spread, z_spread
@@ -253,6 +258,61 @@ check(
     1e4 * z_spread(nearer_par, nearer_fair, curve, REFERENCE).value,
     0.0,
     1e-8,
+)
+
+# -- 6b. The spread the bond is actually swapped into -------------------------
+
+rule("6b. The asset swap spread, in both of its conventions")
+
+print(
+    """
+  The same bond, swapped into the floating index. The par-par buyer pays 100
+  and receives the index plus a spread on 100; the proceeds buyer pays the
+  market price and receives it on that. At a dirty price of exactly par the
+  two are the same number and nowhere else, and the ratio between them is par
+  over the price to the last bit.
+"""
+)
+at_par = asset_swap_spread(bond, 100.0, curve, REFERENCE)
+check("par-par spread at a price of 100, bp", 1e4 * at_par.spread, 275.2721, 5e-4)
+check(
+    "proceeds spread at the same price, bp",
+    1e4 * proceeds_spread(bond, 100.0, curve, REFERENCE),
+    275.2721,
+    5e-4,
+)
+check(
+    "the price component there, bp",
+    1e4 * at_par.price_component,
+    0.0,
+    1e-12,
+)
+cheap = compare_spreads(bond, 95.0, curve, REFERENCE)
+check("par-par spread at 95, bp", 1e4 * cheap.par_par, 329.1637, 5e-4)
+check("proceeds spread at 95, bp", 1e4 * cheap.proceeds, 346.4881, 5e-4)
+check("the ratio between them", cheap.proceeds_over_par_par, 100.0 / 95.0, 1e-12)
+check("Z-spread at 95, bp", 1e4 * cheap.z_spread, 346.3071, 5e-4)
+
+# The bond priced on the curve earns nothing over it, which the I-spread above
+# could not say. This is the same statement as the Z-spread's, reached through
+# a structure rather than through a discounting convention.
+check(
+    "asset swap spread of the bond priced on the curve, bp",
+    1e4 * par_par_spread(bond, fair, curve, REFERENCE),
+    0.0,
+    1e-11,
+)
+
+# One amount of money, two annuities. Neither quote is wrong.
+LEGS = ((Frequency.QUARTERLY, Basis.ACT_360), (Frequency.ANNUAL, Basis.THIRTY_360_BOND))
+legs = leg_sensitivity(bond, 95.0, curve, REFERENCE, LEGS)
+check("quarterly ACT/360 leg, bp", 1e4 * legs[0].spread, 329.1637, 5e-4)
+check("annual 30/360 leg, bp", 1e4 * legs[1].spread, 336.6962, 5e-4)
+check(
+    "the money the two legs amortise, identical",
+    legs[0].spread * legs[0].annuity - legs[1].spread * legs[1].annuity,
+    0.0,
+    1e-15,
 )
 
 # -- 7. The lattice, and what the option costs --------------------------------
