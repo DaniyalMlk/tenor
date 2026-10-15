@@ -328,11 +328,6 @@ def _parts(
             "structure cannot be valued there"
         )
     flows = bond.cashflows(settlement)
-    if not flows:
-        raise BadAssetSwap(
-            f"{bond.name} has no cash flows after {settlement.isoformat()}, so "
-            "there is nothing to swap"
-        )
     curve_price = sum(flow.amount * curve.discount(flow.day) / base for flow in flows)
     final = flows[-1]
     redemption_pv = bond.redemption * curve.discount(final.day) / base
