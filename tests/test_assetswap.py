@@ -27,12 +27,12 @@ import pytest
 
 from tenor.assetswap import (
     AssetSwap,
+    AssetSwapLeg,
     BadAssetSwap,
-    Convention,
-    FloatingLeg,
+    Quotation,
+    asset_swap_leg,
     asset_swap_spread,
     compare_spreads,
-    leg_for,
     leg_sensitivity,
     par_par_spread,
     price_from_spread,
@@ -71,9 +71,9 @@ def package_value(
     dirty: float,
     curve: DiscountCurve,
     settlement: date,
-    leg: FloatingLeg,
+    leg: AssetSwapLeg,
     spread: float,
-    convention: Convention,
+    convention: Quotation,
 ) -> float:
     """What the buyer's whole position is worth at inception, from the flows.
 
@@ -96,7 +96,7 @@ def package_value(
     floating = forward(leg.first_accrual) - forward(leg.final_payment)
     annuity = leg.annuity(curve, settlement)
 
-    if convention is Convention.PAR_PAR:
+    if convention is Quotation.PAR_PAR:
         notional = bond.redemption
         # Pay par, take delivery of the bond. The swap pays the coupons away
         # and brings back the index plus the spread on a notional of par; the
@@ -126,14 +126,14 @@ def package_value(
 class TestTheStructureIsWorthZero:
     """The only test that is not a consequence of the others."""
 
-    @pytest.mark.parametrize("convention", list(Convention))
+    @pytest.mark.parametrize("convention", list(Quotation))
     @pytest.mark.parametrize("price", [70.0, 85.0, 100.0, 116.0, 130.0])
     @pytest.mark.parametrize("coupon", [0.0, 0.02, 0.04, 0.08])
     def test_independent_valuation_vanishes(
-        self, convention: Convention, price: float, coupon: float
+        self, convention: Quotation, price: float, coupon: float
     ) -> None:
         curve, bond = sloped(), sample_bond(coupon)
-        leg = leg_for(bond, REFERENCE)
+        leg = asset_swap_leg(bond, REFERENCE)
         struck = asset_swap_spread(
             bond, price, curve, REFERENCE, leg=leg, convention=convention
         )
@@ -148,10 +148,10 @@ class TestTheStructureIsWorthZero:
         )
         assert abs(value) < 1e-12, (convention, price, coupon, value)
 
-    @pytest.mark.parametrize("convention", list(Convention))
-    def test_a_different_spread_does_not_vanish(self, convention: Convention) -> None:
+    @pytest.mark.parametrize("convention", list(Quotation))
+    def test_a_different_spread_does_not_vanish(self, convention: Quotation) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = leg_for(bond, REFERENCE)
+        leg = asset_swap_leg(bond, REFERENCE)
         struck = asset_swap_spread(
             bond, 90.0, curve, REFERENCE, leg=leg, convention=convention
         )
@@ -172,7 +172,7 @@ class TestTheStructureIsWorthZero:
 
     def test_a_forward_starting_leg_still_prices_to_zero(self) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = FloatingLeg(effective=date(2021, 7, 15), maturity=bond.maturity)
+        leg = AssetSwapLeg(effective=date(2021, 7, 15), maturity=bond.maturity)
         struck = asset_swap_spread(bond, 90.0, curve, REFERENCE, leg=leg)
         value = package_value(
             bond,
@@ -181,7 +181,7 @@ class TestTheStructureIsWorthZero:
             REFERENCE,
             leg,
             struck.spread,
-            Convention.PAR_PAR,
+            Quotation.PAR_PAR,
         )
         assert abs(value) < 1e-12, value
 
@@ -189,9 +189,9 @@ class TestTheStructureIsWorthZero:
 class TestOnTheCurve:
     """A bond priced exactly on the curve earns nothing over it."""
 
-    @pytest.mark.parametrize("convention", list(Convention))
+    @pytest.mark.parametrize("convention", list(Quotation))
     @pytest.mark.parametrize("coupon", [0.01, 0.04, 0.09])
-    def test_spread_is_exactly_zero(self, convention: Convention, coupon: float) -> None:
+    def test_spread_is_exactly_zero(self, convention: Quotation, coupon: float) -> None:
         curve, bond = sloped(), sample_bond(coupon)
         clean = bond.price_from_curve(curve, REFERENCE) - bond.accrued(REFERENCE)
         struck = asset_swap_spread(
@@ -219,7 +219,7 @@ class TestTheTwoConventions:
         curve, bond = sloped(), sample_bond()
         par_par = asset_swap_spread(bond, price, curve, REFERENCE)
         proceeds = asset_swap_spread(
-            bond, price, curve, REFERENCE, convention=Convention.PROCEEDS
+            bond, price, curve, REFERENCE, convention=Quotation.PROCEEDS
         )
         assert proceeds.spread / par_par.spread == pytest.approx(
             100.0 / par_par.dirty_price, rel=1e-14
@@ -388,7 +388,7 @@ class TestTheLegsConvention:
             curve,
             REFERENCE,
             self.CONVENTIONS,
-            convention=Convention.PROCEEDS,
+            convention=Quotation.PROCEEDS,
         )
         quoted = [row.spread * 10000 for row in rows]
         assert max(quoted) - min(quoted) == pytest.approx(5.30, abs=0.02)
@@ -406,7 +406,7 @@ class TestTheResidual:
 
     def test_one_holiday_on_the_redemption_payment(self) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = leg_for(bond, REFERENCE, calendar=calendar_from("US", [date(2031, 1, 15)]))
+        leg = asset_swap_leg(bond, REFERENCE, calendar=calendar_from("US", [date(2031, 1, 15)]))
         assert leg.final_payment == date(2031, 1, 16)
         assert bond.cashflows(REFERENCE)[-1].day == date(2031, 1, 15)
         struck = asset_swap_spread(bond, 90.0, curve, REFERENCE, leg=leg)
@@ -416,7 +416,7 @@ class TestTheResidual:
 
     def test_a_leg_that_starts_six_months_forward(self) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = FloatingLeg(effective=date(2021, 7, 15), maturity=bond.maturity)
+        leg = AssetSwapLeg(effective=date(2021, 7, 15), maturity=bond.maturity)
         struck = asset_swap_spread(bond, 90.0, curve, REFERENCE, leg=leg)
         assert struck.residual == pytest.approx(-0.1204, abs=1e-4)
         textbook = (struck.curve_price - struck.dirty_price) / (100.0 * struck.annuity)
@@ -424,10 +424,10 @@ class TestTheResidual:
 
     def test_the_conventions_ratio_breaks_too(self) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = leg_for(bond, REFERENCE, calendar=calendar_from("US", [date(2031, 1, 15)]))
+        leg = asset_swap_leg(bond, REFERENCE, calendar=calendar_from("US", [date(2031, 1, 15)]))
         par_par = asset_swap_spread(bond, 90.0, curve, REFERENCE, leg=leg)
         proceeds = asset_swap_spread(
-            bond, 90.0, curve, REFERENCE, leg=leg, convention=Convention.PROCEEDS
+            bond, 90.0, curve, REFERENCE, leg=leg, convention=Quotation.PROCEEDS
         )
         ratio = proceeds.spread / par_par.spread
         exact = 100.0 / par_par.dirty_price
@@ -438,9 +438,9 @@ class TestTheResidual:
 class TestTheInverse:
     """A quote goes back to a price without a root find."""
 
-    @pytest.mark.parametrize("convention", list(Convention))
+    @pytest.mark.parametrize("convention", list(Quotation))
     @pytest.mark.parametrize("price", [65.0, 90.0, 100.0, 125.0])
-    def test_round_trip(self, convention: Convention, price: float) -> None:
+    def test_round_trip(self, convention: Quotation, price: float) -> None:
         curve, bond = sloped(), sample_bond()
         spread = asset_swap_spread(
             bond, price, curve, REFERENCE, convention=convention
@@ -450,10 +450,10 @@ class TestTheInverse:
         )
         assert back == pytest.approx(price, abs=1e-10)
 
-    @pytest.mark.parametrize("convention", list(Convention))
-    def test_round_trip_through_a_mismatched_leg(self, convention: Convention) -> None:
+    @pytest.mark.parametrize("convention", list(Quotation))
+    def test_round_trip_through_a_mismatched_leg(self, convention: Quotation) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = FloatingLeg(effective=date(2021, 4, 15), maturity=bond.maturity)
+        leg = AssetSwapLeg(effective=date(2021, 4, 15), maturity=bond.maturity)
         spread = asset_swap_spread(
             bond, 95.0, curve, REFERENCE, leg=leg, convention=convention
         ).spread
@@ -506,7 +506,7 @@ class TestDecomposition:
         )
         assert proceeds_spread(bond, 90.0, curve, REFERENCE) == pytest.approx(
             asset_swap_spread(
-                bond, 90.0, curve, REFERENCE, convention=Convention.PROCEEDS
+                bond, 90.0, curve, REFERENCE, convention=Quotation.PROCEEDS
             ).spread,
             rel=0.0,
         )
@@ -523,7 +523,7 @@ class TestRefusals:
 
     def test_a_leg_that_ends_before_it_starts(self) -> None:
         with pytest.raises(BadAssetSwap, match="ends before it starts"):
-            FloatingLeg(effective=date(2026, 1, 5), maturity=date(2024, 1, 5))
+            AssetSwapLeg(effective=date(2026, 1, 5), maturity=date(2024, 1, 5))
 
     def test_a_negative_price(self) -> None:
         curve, bond = sloped(), sample_bond()
@@ -536,7 +536,7 @@ class TestRefusals:
         # maturity date, which is more use than one naming the structure.
         curve = sloped()
         matured = Bond(date(2019, 1, 15), date(2020, 1, 15), 0.04)
-        leg = FloatingLeg(effective=REFERENCE, maturity=date(2026, 1, 5))
+        leg = AssetSwapLeg(effective=REFERENCE, maturity=date(2026, 1, 5))
         with pytest.raises(BadBond, match="matured on 2020-01-15"):
             asset_swap_spread(matured, 100.0, curve, REFERENCE, leg=leg)
 
@@ -544,11 +544,11 @@ class TestRefusals:
         curve, bond = sloped(), sample_bond()
         with pytest.raises(BadAssetSwap, match="denominator"):
             price_from_spread(
-                bond, -1.0, curve, REFERENCE, convention=Convention.PROCEEDS
+                bond, -1.0, curve, REFERENCE, convention=Quotation.PROCEEDS
             )
 
     def test_settlement_past_the_curve(self) -> None:
         curve, bond = sloped(), sample_bond()
-        leg = leg_for(bond, REFERENCE)
+        leg = asset_swap_leg(bond, REFERENCE)
         with pytest.raises(OffCurve):
             leg.annuity(curve, date(2099, 1, 5))

@@ -124,14 +124,14 @@ from .schedule import Frequency
 
 __all__ = [
     "AssetSwap",
+    "AssetSwapLeg",
     "BadAssetSwap",
-    "Convention",
-    "FloatingLeg",
     "LegSensitivity",
+    "Quotation",
     "SpreadComparison",
+    "asset_swap_leg",
     "asset_swap_spread",
     "compare_spreads",
-    "leg_for",
     "leg_sensitivity",
     "par_par_spread",
     "price_from_spread",
@@ -143,7 +143,7 @@ class BadAssetSwap(ValueError):
     """An asset swap that cannot be struck."""
 
 
-class Convention(str, Enum):
+class Quotation(str, Enum):
     """Which notional the spread is paid on.
 
     The two conventions describe the same bond and the same curve. They differ
@@ -159,7 +159,7 @@ class Convention(str, Enum):
 
 
 @dataclass(frozen=True)
-class FloatingLeg:
+class AssetSwapLeg:
     """The leg the spread is paid on, described without reference to the bond.
 
     An asset swap's floating leg is a market convention, not a property of the
@@ -244,7 +244,7 @@ class FloatingLeg:
         return (near - far) / base
 
 
-def leg_for(
+def asset_swap_leg(
     bond: Bond,
     settlement: date,
     *,
@@ -252,14 +252,14 @@ def leg_for(
     basis: Basis = Basis.ACT_360,
     calendar: Calendar | None = None,
     rolling: Rolling = Rolling.MODIFIED_FOLLOWING,
-) -> FloatingLeg:
+) -> AssetSwapLeg:
     """The leg an asset swap on ``bond`` is struck with by default.
 
     Settlement to the bond's maturity. Not to the bond's *last payment*: the
     schedule rolls the maturity forward in the same way for both, so matching
     the unadjusted dates is what makes the two sides land together.
     """
-    return FloatingLeg(
+    return AssetSwapLeg(
         effective=settlement,
         maturity=bond.maturity,
         frequency=frequency,
@@ -273,7 +273,7 @@ def leg_for(
 class AssetSwap:
     """A struck asset swap, with the spread and what it is made of."""
 
-    convention: Convention
+    convention: Quotation
     spread: float
     """The spread over the index, in the same units as a rate."""
 
@@ -318,7 +318,7 @@ class AssetSwap:
 
 
 def _parts(
-    bond: Bond, curve: DiscountCurve, settlement: date, leg: FloatingLeg
+    bond: Bond, curve: DiscountCurve, settlement: date, leg: AssetSwapLeg
 ) -> tuple[float, float, float, float, float]:
     """``(curve_price, redemption_pv, annuity, projected, par)`` at settlement."""
     base = curve.discount(settlement)
@@ -347,8 +347,8 @@ def asset_swap_spread(
     curve: DiscountCurve,
     settlement: date,
     *,
-    leg: FloatingLeg | None = None,
-    convention: Convention = Convention.PAR_PAR,
+    leg: AssetSwapLeg | None = None,
+    convention: Quotation = Quotation.PAR_PAR,
     clean: bool = True,
 ) -> AssetSwap:
     """The spread that makes the asset swap worth zero at inception.
@@ -358,7 +358,7 @@ def asset_swap_spread(
     spread, so there is nothing to solve.
     """
     if leg is None:
-        leg = leg_for(bond, settlement)
+        leg = asset_swap_leg(bond, settlement)
     dirty = price + bond.accrued(settlement) if clean else price
     if dirty <= 0.0:
         raise BadAssetSwap(
@@ -369,7 +369,7 @@ def asset_swap_spread(
         bond, curve, settlement, leg
     )
     residual = par * projected - (par - redemption_pv)
-    if convention is Convention.PAR_PAR:
+    if convention is Quotation.PAR_PAR:
         notional = par
         numerator = curve_price - dirty - residual
     else:
@@ -393,12 +393,12 @@ def par_par_spread(
     curve: DiscountCurve,
     settlement: date,
     *,
-    leg: FloatingLeg | None = None,
+    leg: AssetSwapLeg | None = None,
     clean: bool = True,
 ) -> float:
     """The par-par asset swap spread, as a rate."""
     return asset_swap_spread(
-        bond, price, curve, settlement, leg=leg, convention=Convention.PAR_PAR, clean=clean
+        bond, price, curve, settlement, leg=leg, convention=Quotation.PAR_PAR, clean=clean
     ).spread
 
 
@@ -408,7 +408,7 @@ def proceeds_spread(
     curve: DiscountCurve,
     settlement: date,
     *,
-    leg: FloatingLeg | None = None,
+    leg: AssetSwapLeg | None = None,
     clean: bool = True,
 ) -> float:
     """The proceeds (market value) asset swap spread, as a rate."""
@@ -418,7 +418,7 @@ def proceeds_spread(
         curve,
         settlement,
         leg=leg,
-        convention=Convention.PROCEEDS,
+        convention=Quotation.PROCEEDS,
         clean=clean,
     ).spread
 
@@ -429,8 +429,8 @@ def price_from_spread(
     curve: DiscountCurve,
     settlement: date,
     *,
-    leg: FloatingLeg | None = None,
-    convention: Convention = Convention.PAR_PAR,
+    leg: AssetSwapLeg | None = None,
+    convention: Quotation = Quotation.PAR_PAR,
     clean: bool = True,
 ) -> float:
     """The price a quoted asset swap spread implies.
@@ -441,12 +441,12 @@ def price_from_spread(
     relation still rearranges rather than needing a root find.
     """
     if leg is None:
-        leg = leg_for(bond, settlement)
+        leg = asset_swap_leg(bond, settlement)
     curve_price, redemption_pv, annuity, projected, par = _parts(
         bond, curve, settlement, leg
     )
     residual = par * projected - (par - redemption_pv)
-    if convention is Convention.PAR_PAR:
+    if convention is Quotation.PAR_PAR:
         dirty = curve_price - residual - spread * par * annuity
     else:
         denominator = projected + redemption_pv / par + spread * annuity
@@ -486,7 +486,7 @@ def compare_spreads(
     curve: DiscountCurve,
     settlement: date,
     *,
-    leg: FloatingLeg | None = None,
+    leg: AssetSwapLeg | None = None,
     clean: bool = True,
 ) -> SpreadComparison:
     """Every spread measure in the library, on one bond at one price."""
@@ -519,7 +519,7 @@ def leg_sensitivity(
     settlement: date,
     conventions: tuple[tuple[Frequency, Basis], ...],
     *,
-    convention: Convention = Convention.PAR_PAR,
+    convention: Quotation = Quotation.PAR_PAR,
     clean: bool = True,
 ) -> tuple[LegSensitivity, ...]:
     """The same bond's spread under several floating leg conventions.
@@ -532,7 +532,7 @@ def leg_sensitivity(
     """
     out: list[LegSensitivity] = []
     for frequency, basis in conventions:
-        leg = leg_for(bond, settlement, frequency=frequency, basis=basis)
+        leg = asset_swap_leg(bond, settlement, frequency=frequency, basis=basis)
         struck = asset_swap_spread(
             bond,
             price,
