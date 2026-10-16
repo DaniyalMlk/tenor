@@ -1528,3 +1528,21 @@ redemption payment. When it does, the residual is 3.6e-15. When it does not:
 Under a mismatch the `100 / price` relation between the conventions also stops
 holding exactly, 1.0882953 against 1.0882709 in the holiday case. Both numbers
 are known only because the residual is computed rather than assumed away.
+
+## Phase 26 — The command line explains itself
+
+- [x] Help text on every option, not just the ones whose meaning is obvious
+      from the flag name
+- [x] Where the setting materially moves the answer, the text says which way:
+      the asset swap's leg basis is worth over a per cent, the lattice
+      volatility is the whole of the option value, Svensson trades long-end
+      flexibility for identifiability
+- [x] A parametrised sweep that renders `--help` for the root parser and every
+      subcommand, since a help string is expanded only when it is displayed and
+      nothing exercised that path
+- [x] Commands enumerated by walking the parser, recursively, rather than listed
+      by hand — the list is what goes stale
+- [x] A completeness check that every argument carries help at all
+- [x] Both guards verified against the regressions they exist for
+- [x] The same sweep in CI against the built wheel, so a help string that fails
+      to render cannot reach a release
