@@ -2546,6 +2546,9 @@ def parser() -> argparse.ArgumentParser:
             "--interpolation",
             default=Interpolation.LOG_LINEAR_DISCOUNT.name,
             choices=[one.name for one in Interpolation],
+            help="what the curve does between pillars. The default holds the "
+            "forward flat across each gap, which is the only choice here that "
+            "cannot put a negative forward between two positive quotes.",
         )
 
     def bond_arguments(sub: argparse.ArgumentParser) -> None:
@@ -2555,11 +2558,14 @@ def parser() -> argparse.ArgumentParser:
             "--frequency",
             default="SEMI_ANNUAL",
             choices=[one.name for one in Frequency],
+            help="how often the bond pays",
         )
         sub.add_argument(
             "--bond-basis",
             default=Basis.THIRTY_360_BOND.name,
             choices=[one.name for one in Basis],
+            help="the day count the bond's own coupons accrue on, which is not "
+            "the curve's and is what settles accrued interest",
         )
 
     curve = subcommands.add_parser("curve", help="bootstrap and print the curve")
@@ -2588,6 +2594,8 @@ def parser() -> argparse.ArgumentParser:
         "--leg-basis",
         default=Basis.ACT_360.name,
         choices=[one.name for one in Basis],
+        help="the day count the floating leg accrues on. The spread is money "
+        "divided by that leg's annuity, so this moves it by over a per cent.",
     )
     assetswap.add_argument(
         "--legs",
@@ -2635,6 +2643,9 @@ def parser() -> argparse.ArgumentParser:
         "--family",
         default=Family.NELSON_SIEGEL.name,
         choices=[one.name for one in Family],
+        help="the shape fitted. SVENSSON adds a second hump and a second decay, "
+        "which buys flexibility at the long end and costs identifiability: the "
+        "reported decay band is usually much wider for it.",
     )
     fitted.add_argument(
         "--weighting",
@@ -2652,11 +2663,13 @@ def parser() -> argparse.ArgumentParser:
         "--frequency",
         default="SEMI_ANNUAL",
         choices=[one.name for one in Frequency],
+        help="how often the bonds in the quote file pay",
     )
     fitted.add_argument(
         "--bond-basis",
         default=Basis.THIRTY_360_BOND.name,
         choices=[one.name for one in Basis],
+        help="the day count those coupons accrue on",
     )
     fitted.set_defaults(run=run_fit)
 
@@ -2700,10 +2713,17 @@ def parser() -> argparse.ArgumentParser:
         "date, which makes settlement a reset date.",
     )
     floating.add_argument(
-        "--frequency", default="QUARTERLY", choices=[one.name for one in Frequency]
+        "--frequency",
+        default="QUARTERLY",
+        choices=[one.name for one in Frequency],
+        help="how often the note resets and pays, which are the same dates",
     )
     floating.add_argument(
-        "--note-basis", default=Basis.ACT_360.name, choices=[one.name for one in Basis]
+        "--note-basis",
+        default=Basis.ACT_360.name,
+        choices=[one.name for one in Basis],
+        help="the day count the note's coupons accrue on, which is not the "
+        "curve's and is what the discount margin is quoted against",
     )
     floating.add_argument(
         "--margin",
@@ -2763,12 +2783,17 @@ def parser() -> argparse.ArgumentParser:
         help="the bond's dated date, ISO. Defaults to the reference date.",
     )
     linked.add_argument(
-        "--frequency", default="SEMI_ANNUAL", choices=[one.name for one in Frequency]
+        "--frequency",
+        default="SEMI_ANNUAL",
+        choices=[one.name for one in Frequency],
+        help="how often the linker pays its real coupon",
     )
     linked.add_argument(
         "--linker-basis",
         default=Basis.ACT_ACT_ISDA.name,
         choices=[one.name for one in Basis],
+        help="the day count the real coupon accrues on. Actual/actual is the "
+        "sovereign linker convention; the thirty-day forms are not used here.",
     )
     real = linked.add_mutually_exclusive_group(required=True)
     real.add_argument("--real-yield", type=float, help="price at this real yield, as 0.012")
@@ -2808,9 +2833,22 @@ def parser() -> argparse.ArgumentParser:
     option = subcommands.add_parser("option", help="value an embedded option")
     shared(option)
     bond_arguments(option)
-    option.add_argument("--volatility", required=True, type=float)
+    option.add_argument(
+        "--volatility",
+        required=True,
+        type=float,
+        help="the short rate's annualised volatility the lattice is built at, "
+        "as 0.01 for a hundred basis points. The whole option value is this "
+        "number: at zero the call is worth nothing and the two spreads agree.",
+    )
     option.add_argument("--first-call", required=True, help="first exercise date, ISO")
-    option.add_argument("--call-price", default=100.0, type=float)
+    option.add_argument(
+        "--call-price",
+        default=100.0,
+        type=float,
+        help="the strike, as a clean price. Par by default, which is where a "
+        "continuous call schedule normally sits.",
+    )
     option.add_argument(
         "--put", action="store_true", help="the holder's option rather than the issuer's"
     )
@@ -2854,12 +2892,15 @@ def parser() -> argparse.ArgumentParser:
         dest="index_tenor",
         default=Frequency.QUARTERLY.name,
         choices=[one.name for one in Frequency],
+        help="the tenor of the index the cap is on, which sets the roll grid "
+        "every quoted maturity has to sit on for the strip to be well posed",
     )
     caplets.add_argument(
         "--index-basis",
         dest="index_basis",
         default=Basis.ACT_360.name,
         choices=[one.name for one in Basis],
+        help="the day count that index accrues on",
     )
     caplets.add_argument(
         "--vol-basis",
@@ -2903,7 +2944,14 @@ def parser() -> argparse.ArgumentParser:
     credit.add_argument(
         "--bond-maturity", dest="bond_maturity", default=None, help="also price a bond"
     )
-    credit.add_argument("--bond-coupon", dest="bond_coupon", type=float, default=0.05)
+    credit.add_argument(
+        "--bond-coupon",
+        dest="bond_coupon",
+        type=float,
+        default=0.05,
+        help="the coupon on the bond priced by --bond-maturity, annual, as 0.05. "
+        "Ignored without it.",
+    )
     credit.set_defaults(run=run_credit)
 
     futures = subcommands.add_parser(
@@ -3182,24 +3230,29 @@ def parser() -> argparse.ArgumentParser:
         dest="index_tenor",
         default=Frequency.QUARTERLY.name,
         choices=[one.name for one in Frequency],
+        help="the floating leg's reset and payment frequency",
     )
     swaption.add_argument(
         "--index-basis",
         dest="index_basis",
         default=Basis.ACT_360.name,
         choices=[one.name for one in Basis],
+        help="the day count the floating leg accrues on",
     )
     swaption.add_argument(
         "--fixed-frequency",
         dest="fixed_frequency",
         default=Frequency.SEMI_ANNUAL.name,
         choices=[one.name for one in Frequency],
+        help="the fixed leg's payment frequency",
     )
     swaption.add_argument(
         "--fixed-basis",
         dest="fixed_basis",
         default=Basis.THIRTY_360_BOND.name,
         choices=[one.name for one in Basis],
+        help="the day count the fixed leg accrues on, which is what turns the "
+        "par rate into money and so moves the premium",
     )
     swaption.add_argument(
         "--vol-basis",
@@ -3301,31 +3354,50 @@ def parser() -> argparse.ArgumentParser:
         help="strike for the leg's cap and floor; defaults to the forward",
     )
     cms.add_argument("--width", type=float, default=10.0, help="ceiling, in sigma")
-    cms.add_argument("--panels", type=int, default=64)
-    cms.add_argument("--nodes", type=int, default=8)
+    cms.add_argument(
+        "--panels",
+        type=int,
+        default=64,
+        help="quadrature panels across the replicating strip. Graded towards "
+        "the forward, sixteen already reach 5.1e-13 on the second moment "
+        "identity, so the default is headroom for a steep surface rather than "
+        "where the accuracy comes from -- the grading is.",
+    )
+    cms.add_argument(
+        "--nodes",
+        type=int,
+        default=8,
+        help="Gauss nodes per panel. Two is the floor: a rule with fewer "
+        "cannot integrate a curvature at all.",
+    )
     cms.add_argument(
         "--index-tenor",
         dest="index_tenor",
         default=Frequency.QUARTERLY.name,
         choices=[one.name for one in Frequency],
+        help="the reset frequency of the floating leg of the swap the rate is on",
     )
     cms.add_argument(
         "--index-basis",
         dest="index_basis",
         default=Basis.ACT_360.name,
         choices=[one.name for one in Basis],
+        help="the day count that floating leg accrues on",
     )
     cms.add_argument(
         "--fixed-frequency",
         dest="fixed_frequency",
         default=Frequency.SEMI_ANNUAL.name,
         choices=[one.name for one in Frequency],
+        help="the fixed frequency of that swap, which sets the annuity the "
+        "convexity adjustment is measured against",
     )
     cms.add_argument(
         "--fixed-basis",
         dest="fixed_basis",
         default=Basis.THIRTY_360_BOND.name,
         choices=[one.name for one in Basis],
+        help="the day count that fixed leg accrues on",
     )
     cms.add_argument(
         "--vol-basis",
@@ -3358,6 +3430,8 @@ def parser() -> argparse.ArgumentParser:
         "--frequency",
         default=Frequency.QUARTERLY.name,
         choices=[one.name for one in Frequency],
+        help="how often the cap fixes and pays, which is what divides the "
+        "period into caplets",
     )
     g2.add_argument("--strike", required=True, type=float, help="the cap rate, as 0.038")
     g2.add_argument("--floor", action="store_true", help="price the floor instead")
@@ -3405,6 +3479,8 @@ def parser() -> argparse.ArgumentParser:
         dest="time_basis",
         default=Basis.ACT_365F.name,
         choices=[one.name for one in Basis],
+        help="the day count model time is measured in, which is what the two "
+        "mean reversions and volatilities are quoted per",
     )
     g2.set_defaults(run=run_g2)
 
@@ -3468,12 +3544,14 @@ def parser() -> argparse.ArgumentParser:
         dest="fixed_frequency",
         default=Frequency.SEMI_ANNUAL.name,
         choices=[one.name for one in Frequency],
+        help="the fixed leg's payment frequency",
     )
     hullwhite.add_argument(
         "--fixed-basis",
         dest="fixed_basis",
         default=Basis.THIRTY_360_BOND.name,
         choices=[one.name for one in Basis],
+        help="the day count the fixed leg accrues on",
     )
     hullwhite.add_argument(
         "--time-basis",
@@ -3611,12 +3689,15 @@ def parser() -> argparse.ArgumentParser:
         dest="fixed_frequency",
         default=Frequency.SEMI_ANNUAL.name,
         choices=[one.name for one in Frequency],
+        help="the fixed leg's payment frequency, whose dates are also the "
+        "exercise dates",
     )
     bermudan.add_argument(
         "--fixed-basis",
         dest="fixed_basis",
         default=Basis.THIRTY_360_BOND.name,
         choices=[one.name for one in Basis],
+        help="the day count the fixed leg accrues on",
     )
     bermudan.add_argument(
         "--time-basis",
