@@ -63,6 +63,27 @@ jobs:
         run: |
           python -m venv /tmp/check
           /tmp/check/bin/pip install dist/*.whl
+      # Every command's --help, against the artefact that would be published.
+      # argparse expands help strings through %-formatting at display time, so
+      # a literal per cent sign raises TypeError there and nowhere else: the
+      # suite exercises the commands and the commands work. Only --help is
+      # broken, and it is the first thing anybody types.
+      - name: Every command prints help
+        run: |
+          /tmp/check/bin/tenor --help > /dev/null
+          for sub in $(/tmp/check/bin/python - <<'PY'
+          import argparse
+          from tenor.cli import parser
+          for action in parser()._actions:
+              if isinstance(action, argparse._SubParsersAction):
+                  print(" ".join(sorted(action.choices)))
+                  break
+          PY
+          ); do
+            /tmp/check/bin/tenor "$sub" --help > /dev/null || {
+              echo "tenor $sub --help failed"; exit 1; }
+          done
+          echo "every command printed help"
       - name: The installed package computes something
         # A wheel that imports but cannot produce a number is not a working
         # library, so the check runs the conventions end to end and asserts the
