@@ -18,6 +18,41 @@ instrument-by-instrument risk; spreads — Z-spread, I-spread, asset swap spread
 in both conventions, a calibrated short rate lattice, American exercise and
 option-adjusted spread; and a command line with a worked example.
 
+## What is checked, and against what
+
+The claim above is that the numerics are checked against things outside this
+repository. These are the figures that says, each one produced by
+`examples/worked.py`, which runs in CI and exits non-zero if any of them
+moves:
+
+| Check | Result |
+| --- | --- |
+| A bootstrapped curve reprices every instrument it was built from | 5.6e-17 worst error, log-linear on discount factors |
+| The same, under monotone convex interpolation | 3.2e-16, after 5 sweeps |
+| Hull's futures convexity adjustment, 1.2% volatility at 8 years | 47.52 bp against his 47.5 |
+| The three ISDA 4.16 conventions all called 30/360, over one period | 183, 182 and 180 days |
+| Z-spread of a bond priced on its own curve | zero to within 1e-8 bp; prints below 1e-12 |
+| Option-adjusted spread of a callable priced on its own curve | zero to within 1e-8 bp; prints below 1e-12 |
+| Macaulay duration at a 6% yield, against the closed form | 7.89499734 |
+
+The two spread rows are the ones worth looking at twice. A spread measured
+against the curve a bond was priced on has to be *zero*, and "a plausibly small
+number" is exactly what a subtly wrong implementation returns. These come back
+at the size of floating-point noise, which is a different statement.
+
+They are quoted as bounds rather than digits on purpose. The last bits of a
+root-found quantity are not reproducible across interpreters — the Z-spread
+above comes back at -8.3e-14 on CPython 3.12 and +1.3e-13 on 3.11 — so a
+figure quoted to ten significant digits would be a number that happens to be
+true where it was measured. The bound is the claim, and it is the bound the
+worked example enforces.
+
+```bash
+python examples/worked.py     # all eight sections, non-zero if a figure moves
+```
+
+Behind them: 1902 tests, run on Python 3.10 through 3.13.
+
 ## Installing
 
 ```bash
