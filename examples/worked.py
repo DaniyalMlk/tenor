@@ -365,7 +365,7 @@ if put_cost >= 0.0:
 
 # -- 9. Deliverable bond futures ----------------------------------------------
 
-rule("9. A delivery basket, and where the cheapest bond switches")
+rule("8. A delivery basket, and where the cheapest bond switches")
 
 DELIVERY_FIRST = date(2026, 12, 1)
 DELIVERY = date(2026, 12, 31)
