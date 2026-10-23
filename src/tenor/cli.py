@@ -170,6 +170,30 @@ class BadInput(ValueError):
     """Something the command line was given that it cannot use."""
 
 
+def _date(arguments: argparse.Namespace, option: str) -> date:
+    """Read one option's value as an ISO date, saying which option if it is not.
+
+    ``option`` is the long option as a user types it, without the dashes, and
+    the attribute it was stored under is that with the dashes turned back into
+    underscores — argparse's own convention, which every date option here
+    follows.
+
+    The standard library's message for a bad date names the value and not where
+    it came from: ``Invalid isoformat string: 'next-march'``. Several commands
+    take four or five dates, so that leaves a user who has mistyped one of
+    ``--expiry``, ``--effective`` and ``--swap-maturity`` being told that one of
+    them is wrong. Naming the option is the whole of the difference.
+    """
+    text = getattr(arguments, option.replace("-", "_"))
+    try:
+        return date.fromisoformat(text)
+    except ValueError as bad:
+        raise BadInput(
+            f"--{option} is {text!r}, which is not a date. Dates here are ISO, "
+            "as in 2026-06-15."
+        ) from bad
+
+
 def _basis(text: str) -> Basis:
     """A day count, by its name or by how the market spells it.
 
@@ -251,7 +275,7 @@ def _one(kind: str, fields: Sequence[str], reference: date) -> Instrument:
 
 
 def build(arguments: argparse.Namespace) -> Bootstrapped:
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     quotes = parse_quotes(Path(arguments.quotes).read_text(), reference)
     return bootstrap(
         reference,
@@ -306,8 +330,8 @@ def parse_index(text: str) -> ReferenceIndex:
 
 def _linker(arguments: argparse.Namespace, reference: date) -> LinkedBond:
     return LinkedBond(
-        date.fromisoformat(arguments.issued) if arguments.issued else reference,
-        date.fromisoformat(arguments.maturity),
+        _date(arguments, "issued") if arguments.issued else reference,
+        _date(arguments, "maturity"),
         arguments.coupon,
         arguments.base_index,
         Frequency[arguments.frequency.upper()],
@@ -319,7 +343,7 @@ def _linker(arguments: argparse.Namespace, reference: date) -> LinkedBond:
 def _bond(arguments: argparse.Namespace, reference: date) -> Bond:
     return Bond(
         reference,
-        date.fromisoformat(arguments.maturity),
+        _date(arguments, "maturity"),
         arguments.coupon,
         Frequency[arguments.frequency.upper()],
         _basis(arguments.bond_basis),
@@ -328,8 +352,8 @@ def _bond(arguments: argparse.Namespace, reference: date) -> Bond:
 
 def _note(arguments: argparse.Namespace, reference: date) -> FloatingNote:
     return FloatingNote(
-        date.fromisoformat(arguments.issued) if arguments.issued else reference,
-        date.fromisoformat(arguments.maturity),
+        _date(arguments, "issued") if arguments.issued else reference,
+        _date(arguments, "maturity"),
         arguments.quoted_margin,
         Frequency[arguments.frequency.upper()],
         _basis(arguments.note_basis),
@@ -351,7 +375,7 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
     sloping up in strike does not converge, and the number it returns in that
     case is a function of the ceiling rather than of the market.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     index = ForecastIndex(
         tenor=Frequency[arguments.index_tenor.upper()],
@@ -374,10 +398,10 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
     curve = discounting.curve
     projection = forecast.curve
 
-    expiry = date.fromisoformat(arguments.expiry)
+    expiry = _date(arguments, "expiry")
     maturity = add_months(expiry, 12 * arguments.tenor_years, keep_end_of_month=True)
     payment = (
-        date.fromisoformat(arguments.payment)
+        _date(arguments, "payment")
         if arguments.payment
         else add_months(expiry, arguments.delay_months, keep_end_of_month=True)
     )
@@ -493,7 +517,7 @@ def run_cms(arguments: argparse.Namespace) -> dict[str, object]:
     if arguments.leg_maturity:
         leg = ConstantMaturityLeg(
             effective=expiry,
-            maturity=date.fromisoformat(arguments.leg_maturity),
+            maturity=_date(arguments, "leg-maturity"),
             tenor_years=arguments.tenor_years,
             index=index,
             frequency=Frequency[arguments.fixed_frequency.upper()],
@@ -541,7 +565,7 @@ def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
     maturities. Identifying it needs an instrument whose payoff does, and this
     module does not have one.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     curve = discounting.curve
     basis = _basis(arguments.time_basis)
@@ -553,8 +577,8 @@ def run_g2(arguments: argparse.Namespace) -> dict[str, object]:
         rho=arguments.correlation,
     )
 
-    start = date.fromisoformat(arguments.start)
-    end = date.fromisoformat(arguments.end)
+    start = _date(arguments, "start")
+    end = _date(arguments, "end")
     if end <= start:
         raise BadInput(f"the cap ends at {arguments.end} and starts at {arguments.start}")
     frequency = Frequency[arguments.frequency.upper()]
@@ -962,7 +986,7 @@ def run_horizon(arguments: argparse.Namespace) -> dict[str, object]:
     built = build(arguments)
     reference = built.curve.reference
     bond = _bond(arguments, reference)
-    horizon = date.fromisoformat(arguments.horizon)
+    horizon = _date(arguments, "horizon")
     found = horizon_return(bond, built.curve, reference, horizon)
     return {
         "bond": bond.name,
@@ -1033,7 +1057,7 @@ def run_option(arguments: argparse.Namespace) -> dict[str, object]:
         volatility=arguments.volatility,
     )
     coupon = bond.periodic_coupon
-    first = steps_between(built.curve, reference, date.fromisoformat(arguments.first_call), step)
+    first = steps_between(built.curve, reference, _date(arguments, "first-call"), step)
     schedule = tuple((index, arguments.call_price) for index in range(first, steps))
     calls = Exercise(schedule, issuer=not arguments.put)
 
@@ -1146,7 +1170,7 @@ def parse_forecast_quotes(
 
 
 def run_multicurve(arguments: argparse.Namespace) -> dict[str, object]:
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     index = ForecastIndex(
         tenor=Frequency[arguments.index_tenor.upper()],
@@ -1237,7 +1261,7 @@ def run_multicurve(arguments: argparse.Namespace) -> dict[str, object]:
     payload["forward_basis"] = spreads
 
     if arguments.maturity:
-        maturity = date.fromisoformat(arguments.maturity)
+        maturity = _date(arguments, "maturity")
         swap = DualSwap(
             effective=reference,
             maturity=maturity,
@@ -1280,7 +1304,7 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
     is that rate's call times the annuity, and the annuity is nothing but
     discount factors, so it moves by two orders of magnitude more.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     index = ForecastIndex(
         tenor=Frequency[arguments.index_tenor.upper()],
@@ -1301,9 +1325,9 @@ def run_swaption(arguments: argparse.Namespace) -> dict[str, object]:
         interpolation=_interpolation(arguments.interpolation),
     )
 
-    expiry = date.fromisoformat(arguments.expiry)
-    effective = date.fromisoformat(arguments.effective) if arguments.effective else expiry
-    maturity = date.fromisoformat(arguments.swap_maturity)
+    expiry = _date(arguments, "expiry")
+    effective = _date(arguments, "effective") if arguments.effective else expiry
+    maturity = _date(arguments, "swap-maturity")
     payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
     convention = Convention.NORMAL if arguments.normal else Convention.LOGNORMAL
     frequency = Frequency[arguments.fixed_frequency.upper()]
@@ -1410,12 +1434,12 @@ def run_hullwhite(arguments: argparse.Namespace) -> dict[str, object]:
     is always given: one quote cannot separate the two, and the report shows
     what that costs by repricing the same option at the reversion either side.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     curve = discounting.curve
-    expiry = date.fromisoformat(arguments.expiry)
-    effective = date.fromisoformat(arguments.effective) if arguments.effective else expiry
-    maturity = date.fromisoformat(arguments.swap_maturity)
+    expiry = _date(arguments, "expiry")
+    effective = _date(arguments, "effective") if arguments.effective else expiry
+    maturity = _date(arguments, "swap-maturity")
     payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
     frequency = Frequency[arguments.fixed_frequency.upper()]
     fixed_basis = _basis(arguments.fixed_basis)
@@ -1632,7 +1656,7 @@ def run_fx(arguments: argparse.Namespace) -> dict[str, object]:
     )
     foreign = build(foreign_arguments).curve
     spot_day = (
-        date.fromisoformat(arguments.spot_date)
+        _date(arguments, "spot-date")
         if arguments.spot_date is not None
         else domestic.reference
     )
@@ -1817,9 +1841,9 @@ def run_fit(arguments: argparse.Namespace) -> dict[str, object]:
     coefficient moves by thousands, which is why quoting a fitted ``b1`` as the
     slope of the curve is quoting a number nobody measured.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     settlement = (
-        date.fromisoformat(arguments.settlement) if arguments.settlement else reference
+        _date(arguments, "settlement") if arguments.settlement else reference
     )
     frequency = Frequency[arguments.frequency.upper()]
     quotes = _fitted_bonds(
@@ -1891,8 +1915,8 @@ def run_overnight(arguments: argparse.Namespace) -> dict[str, object]:
     """
     built = build(arguments)
     curve = built.curve
-    start = date.fromisoformat(arguments.start)
-    end = date.fromisoformat(arguments.end)
+    start = _date(arguments, "start")
+    end = _date(arguments, "end")
     basis = _basis(arguments.index_basis)
     plain = OvernightIndex(basis=basis)
     lag = arguments.lag
@@ -1941,7 +1965,7 @@ def run_overnight(arguments: argparse.Namespace) -> dict[str, object]:
     }
 
     if arguments.maturity is not None:
-        maturity = date.fromisoformat(arguments.maturity)
+        maturity = _date(arguments, "maturity")
         leg = OvernightLeg(
             effective=start,
             maturity=maturity,
@@ -2057,11 +2081,11 @@ def run_bermudan(arguments: argparse.Namespace) -> dict[str, object]:
     than waiting, and it falls across the dates because a shorter remaining swap
     gives up less by being taken.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     curve = discounting.curve
     expiries = tuple(date.fromisoformat(one) for one in arguments.expiry)
-    maturity = date.fromisoformat(arguments.swap_maturity)
+    maturity = _date(arguments, "swap-maturity")
     payoff = Payoff.RECEIVER if arguments.receiver else Payoff.PAYER
     frequency = Frequency[arguments.fixed_frequency.upper()]
     fixed_basis = _basis(arguments.fixed_basis)
@@ -2155,7 +2179,7 @@ def run_caplets(arguments: argparse.Namespace) -> dict[str, object]:
     strike moves into the money -- a premium can be monotone in the volatility
     and still not respond to it.
     """
-    reference = date.fromisoformat(arguments.reference)
+    reference = _date(arguments, "reference")
     discounting = build(arguments)
     index = ForecastIndex(
         tenor=Frequency[arguments.index_tenor.upper()],
@@ -2168,7 +2192,7 @@ def run_caplets(arguments: argparse.Namespace) -> dict[str, object]:
 
     curve = strip_caplets(
         quotes,
-        date.fromisoformat(arguments.effective),
+        _date(arguments, "effective"),
         arguments.strike,
         discounting.curve,
         projection,
@@ -2184,7 +2208,7 @@ def run_caplets(arguments: argparse.Namespace) -> dict[str, object]:
         repriced = flat_volatility(
             curve,
             bucket.maturity,
-            date.fromisoformat(arguments.effective),
+            _date(arguments, "effective"),
             discounting.curve,
             projection,
             index=index,
@@ -2323,13 +2347,13 @@ def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
     }
     if arguments.position_maturity:
         effective = (
-            date.fromisoformat(arguments.position_effective)
+            _date(arguments, "position-effective")
             if arguments.position_effective
             else reference
         )
         position = CreditDefaultSwap.standard(
             effective,
-            date.fromisoformat(arguments.position_maturity),
+            _date(arguments, "position-maturity"),
             arguments.position_coupon,
             calendar=WEEKENDS_ONLY,
             basis=_basis(arguments.premium_basis),
@@ -2361,7 +2385,7 @@ def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
     if arguments.bond_maturity:
         bond = Bond(
             effective=reference,
-            maturity=date.fromisoformat(arguments.bond_maturity),
+            maturity=_date(arguments, "bond-maturity"),
             coupon=arguments.bond_coupon,
             frequency=frequency,
             basis=_basis(arguments.basis),
@@ -2450,10 +2474,10 @@ def run_futures(arguments: argparse.Namespace) -> dict[str, object]:
     bond_basis = _basis(arguments.bond_basis)
     frequency = Frequency[arguments.frequency.upper()]
     basket = _basket(Path(arguments.basket).read_text(), bond_basis=bond_basis, frequency=frequency)
-    settlement = date.fromisoformat(arguments.settlement)
+    settlement = _date(arguments, "settlement")
     future = BondFuture(
-        first_delivery=date.fromisoformat(arguments.first_delivery),
-        delivery=date.fromisoformat(arguments.delivery),
+        first_delivery=_date(arguments, "first-delivery"),
+        delivery=_date(arguments, "delivery"),
         notional_coupon=arguments.notional_coupon,
         digits=arguments.digits,
         money_basis=_basis(arguments.money_basis),
