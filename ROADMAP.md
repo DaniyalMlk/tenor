@@ -1546,3 +1546,55 @@ are known only because the residual is computed rather than assumed away.
 - [x] Both guards verified against the regressions they exist for
 - [x] The same sweep in CI against the built wheel, so a help string that fails
       to render cannot reach a release
+
+## Phase 27 — A contract marked from inside its own schedule
+
+Everything before this prices an instrument from the day it starts. A credit
+default swap is never looked at on that day: the standard contract rolls on the
+IMM dates and is marked every day in between, so the valuation date sits inside
+a premium period that has partly accrued and not yet paid. That was the one
+state `tenor.credit` could not price — `protection_leg` opened with a year
+fraction that refuses a date in the past, and the `max(start, 0.0)` on the next
+line was written for exactly this case and could never be reached.
+
+- [x] A signed time from the valuation date, negative into the past, with the
+      asymmetry of the thirty-day conventions stated rather than assumed away
+- [x] The premium leg restricted to the periods that have not paid, tested on
+      the payment date and not the accrual end, so a payment lag does not
+      discard a coupon still owed
+- [x] The protection leg integrated from the valuation date or the effective
+      date, whichever is later, which makes the existing clamp reachable in
+      both directions
+- [x] The whole of the current period's coupon paid at the next payment date,
+      since the contract does not pro-rate it
+- [x] The accrual owed on a default measured from the period's own start while
+      the integration clamps to the remaining stub — the two clamps separated,
+      because clamping both is the mistake
+- [x] The gap between the two origins derived as an exact product rather than
+      bounded as a residual: the elapsed accrual times the discounted chance of
+      defaulting inside the stub
+- [x] Where that convention is worth anything, measured across the surface:
+      0.0005bp of par spread at 57bp, 18.3bp at 4826bp
+- [x] The accrued premium as the market quotes it, and the settlement split
+      into principal and accrued as a split of one amount
+- [x] The same slice of coupon valued the way the rest of the leg is valued,
+      so the gap between the quoted convention and its worth is reported
+      rather than left for the reader to assume is zero
+- [x] A matured contract worth nothing rather than an error, and a fully
+      settled one refused by name rather than blamed on the credit
+- [x] The premium leg pinned against a midpoint rule that shares none of the
+      closed form's algebra, with the grid chosen by measuring convergence and
+      both halves of the tolerance asserted
+- [x] Eight ways of breaking the conventions, each confirmed to fail the suite
+- [x] One contract marked from the command line against the curve it strips,
+      exercised over the wire with the inputs it takes and three it refuses
+
+### The two vacuous assertions this phase found in its own gate
+
+Adding a section to the worked example meant updating the count the README
+states, which is pinned — and the pin read `f"all {n}" in README or "eight" in
+README`. The second disjunct is true of any README containing the word eight,
+so the check had stopped being able to fail. The bound check beside it was the
+same string or-ed with itself. Both now read the document back and compare it
+to what the code produced, and the first of them caught a row quoting an
+observed value without stating the bound it is gated at.

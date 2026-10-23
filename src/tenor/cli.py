@@ -2321,6 +2321,43 @@ def run_credit(arguments: argparse.Namespace) -> dict[str, object]:
         "worst_repricing_error_bp": worst * 1e4,
         "pillars": points,
     }
+    if arguments.position_maturity:
+        effective = (
+            date.fromisoformat(arguments.position_effective)
+            if arguments.position_effective
+            else reference
+        )
+        position = CreditDefaultSwap.standard(
+            effective,
+            date.fromisoformat(arguments.position_maturity),
+            arguments.position_coupon,
+            calendar=WEEKENDS_ONLY,
+            basis=_basis(arguments.premium_basis),
+            frequency=frequency,
+            notional=arguments.position_notional,
+        )
+        settlement = position.upfront(curve, built.curve)
+        accrued_worth = position.accrued_value(curve, built.curve)
+        result["position"] = {
+            "effective": effective.isoformat(),
+            "maturity": position.schedule.maturity.isoformat(),
+            "coupon_bp": arguments.position_coupon * 1e4,
+            "notional": arguments.position_notional,
+            "periods_remaining": len(position.remaining(reference)),
+            "periods_total": len(position.schedule),
+            "par_spread_bp": position.par_spread(curve, built.curve) * 1e4,
+            "risky_annuity": position.risky_annuity(curve, built.curve),
+            "protection_leg": position.protection_leg(curve, built.curve),
+            "premium_leg": position.premium_leg(curve, built.curve),
+            # The quoted accrued is a day count, undiscounted and owed whatever
+            # happens. Its present value is the same slice of coupon paid only
+            # on survival to the payment date. Both, because the gap between
+            # them is the reason the principal is not a present value.
+            "accrued": settlement.accrued,
+            "accrued_value": accrued_worth,
+            "principal": settlement.principal,
+            "cash": settlement.cash,
+        }
     if arguments.bond_maturity:
         bond = Bond(
             effective=reference,
@@ -2940,6 +2977,43 @@ def parser() -> argparse.ArgumentParser:
         default="ACT_360",
         choices=[one.name for one in Basis],
         help="day count the premium accrues on, which is not the curve's",
+    )
+    credit.add_argument(
+        "--position-maturity",
+        dest="position_maturity",
+        default=None,
+        help="also mark a single contract against the stripped curve, as an ISO date. "
+        "Without --position-effective the contract is taken to start on the "
+        "reference date; with it, the contract is marked from inside its own "
+        "schedule, which is where every contract in a book sits.",
+    )
+    credit.add_argument(
+        "--position-effective",
+        dest="position_effective",
+        default=None,
+        help="when the contract marked by --position-maturity started, as an ISO date. "
+        "Before the reference date it is seasoned: periods already paid drop out "
+        "and the current coupon's accrued premium is reported separately. "
+        "Defaults to the reference date. Ignored without --position-maturity.",
+    )
+    credit.add_argument(
+        "--position-coupon",
+        dest="position_coupon",
+        type=float,
+        default=0.01,
+        help="the contract's running coupon, annual, as 0.01 for a hundred basis "
+        "points. The standardised contracts trade at a fixed coupon against an "
+        "upfront, which is the principal reported below. Ignored without "
+        "--position-maturity.",
+    )
+    credit.add_argument(
+        "--position-notional",
+        dest="position_notional",
+        type=float,
+        default=10_000_000.0,
+        help="face protected by the contract marked by --position-maturity. The "
+        "accrued and the settlement amounts scale with it, the spread does not. "
+        "Ignored without --position-maturity.",
     )
     credit.add_argument(
         "--bond-maturity", dest="bond_maturity", default=None, help="also price a bond"

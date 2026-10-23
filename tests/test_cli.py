@@ -822,6 +822,113 @@ def test_credit_prices_a_bond_below_its_riskless_value(
     assert bond["credit_cost"] > 0.0
 
 
+def position(
+    quote_file: str, spread_file: str, *extra: str, maturity: str = "2026-03-20"
+) -> list[str]:
+    """A credit invocation that also marks one contract."""
+    return [
+        "--json",
+        "credit",
+        *shared(quote_file),
+        "--spreads",
+        spread_file,
+        "--position-maturity",
+        maturity,
+        *extra,
+    ]
+
+
+def test_credit_marks_a_contract_from_inside_its_own_schedule(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The reference date is 2021-01-05 and the contract started on the December
+    # roll, so it is mid-period: the state every contract in a book is in, and
+    # the one the command could not reach at all before.
+    arguments = position(quote_file, spread_file, "--position-effective", "2020-12-20")
+    assert main(arguments) == 0
+    marked = json.loads(capsys.readouterr().out)["position"]
+    assert marked["effective"] == "2020-12-20"
+    assert marked["accrued"] > 0.0
+    assert marked["risky_annuity"] > 0.0
+
+
+def test_credit_reports_the_settlement_as_a_split_of_one_amount(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = position(quote_file, spread_file, "--position-effective", "2020-12-20")
+    assert main(arguments) == 0
+    marked = json.loads(capsys.readouterr().out)["position"]
+    assert marked["principal"] + marked["accrued"] == pytest.approx(
+        marked["cash"], rel=1e-15, abs=0.0
+    )
+
+
+def test_credit_reports_the_accrued_both_as_quoted_and_as_valued(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The quoted accrued is a day count owed come what may; its value is the
+    # same slice paid only on survival to the payment date. Both are printed,
+    # because a reader given one of them cannot derive the other.
+    arguments = position(quote_file, spread_file, "--position-effective", "2020-12-20")
+    assert main(arguments) == 0
+    marked = json.loads(capsys.readouterr().out)["position"]
+    assert 0.0 < marked["accrued_value"] < marked["accrued"]
+    assert 1.0 - marked["accrued_value"] / marked["accrued"] < 0.01
+
+
+def test_credit_defaults_the_contract_to_starting_today(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(position(quote_file, spread_file)) == 0
+    marked = json.loads(capsys.readouterr().out)["position"]
+    assert marked["effective"] == "2021-01-05"
+    assert marked["accrued"] == 0.0
+    assert marked["principal"] == marked["cash"]
+    assert marked["periods_remaining"] == marked["periods_total"]
+
+
+def test_credit_drops_the_periods_a_seasoned_contract_has_paid(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = position(
+        quote_file, spread_file, "--position-effective", "2019-12-20", maturity="2026-01-05"
+    )
+    assert main(arguments) == 0
+    marked = json.loads(capsys.readouterr().out)["position"]
+    assert marked["periods_remaining"] < marked["periods_total"]
+
+
+def test_credit_marks_the_contract_at_the_curve_it_just_stripped(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A contract maturing on a stripped pillar, struck today at the quoted
+    # coupon, is worth nothing: the curve was built to reprice it.
+    arguments = position(
+        quote_file, spread_file, "--position-coupon", "0.0120", maturity="2026-01-05"
+    )
+    assert main(arguments) == 0
+    marked = json.loads(capsys.readouterr().out)["position"]
+    assert marked["par_spread_bp"] == pytest.approx(120.0, abs=1e-6)
+    assert marked["cash"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_credit_refuses_a_contract_that_has_already_settled(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = position(
+        quote_file, spread_file, "--position-effective", "2019-06-20", maturity="2020-06-20"
+    )
+    assert main(arguments) == 2
+    assert "nothing left to settle" in capsys.readouterr().err
+
+
+def test_credit_refuses_a_contract_whose_dates_are_not_dates(
+    quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(position(quote_file, spread_file, maturity="next-march")) == 2
+    assert "next-march" in capsys.readouterr().err
+
+
 def test_credit_recovery_moves_the_price_the_right_way(
     quote_file: str, spread_file: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

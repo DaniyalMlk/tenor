@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from tenor.bond import Bond
-from tenor.calendar import WEEKENDS_ONLY
+from tenor.calendar import WEEKENDS_ONLY, Rolling
 from tenor.credit import (
     BadCredit,
     CreditDefaultSwap,
     SurvivalCurve,
+    UpfrontSettlement,
     _expm1_ratio,
     _ramp_integral,
+    _signed_time,
     _survival_integral,
     bootstrap_hazards,
     implied_hazard,
@@ -22,9 +24,9 @@ from tenor.credit import (
     triangle_hazard,
     triangle_spread,
 )
-from tenor.curve import flat_curve
-from tenor.daycount import Basis
-from tenor.schedule import Frequency
+from tenor.curve import DiscountCurve, flat_curve
+from tenor.daycount import Basis, year_fraction
+from tenor.schedule import Frequency, generate
 
 REFERENCE = date(2026, 6, 15)
 FIVE_YEAR = date(2031, 6, 20)
@@ -661,3 +663,439 @@ class TestTheFiguresInTheReadme:
         assert last.hazard / average == pytest.approx(1.5, abs=0.2)
         triangle = triangle_hazard(TestBootstrap.SPREADS[-1], RECOVERY)
         assert 100.0 * (average / triangle - 1.0) == pytest.approx(9.0, abs=2.0)
+
+
+# -- a contract that is already running ----------------------------------------
+
+#: The March IMM roll. A contract struck there is most of a period old on
+#: REFERENCE, and the elapsed fraction is an awkward number rather than a round
+#: one, which is the point: the arithmetic is worth checking where it does not
+#: simplify.
+ROLL = date(2026, 3, 20)
+
+#: Far enough past the first payment date that a period has actually settled.
+LATER = date(2026, 9, 1)
+
+
+def seasoned(
+    *,
+    effective: date = ROLL,
+    maturity: date = FIVE_YEAR,
+    coupon: float = 0.01,
+    basis: Basis = Basis.ACT_365F,
+    frequency: Frequency = Frequency.QUARTERLY,
+    payment_lag: int = 0,
+    notional: float = 1.0,
+    accrual: bool = True,
+) -> CreditDefaultSwap:
+    """A contract on the standard conventions, struck on an arbitrary date."""
+    schedule = generate(
+        effective,
+        maturity,
+        frequency,
+        calendar=WEEKENDS_ONLY,
+        rolling=Rolling.FOLLOWING,
+        payment_lag=payment_lag,
+    )
+    return CreditDefaultSwap(schedule, basis, coupon, notional, accrual_on_default=accrual)
+
+
+def at(
+    reference: date,
+    *,
+    rate: float = 0.03,
+    hazard: float = 0.03,
+    maturity: date = FIVE_YEAR,
+) -> tuple[SurvivalCurve, DiscountCurve]:
+    """A survival and discount curve pair referenced on ``reference``."""
+    return (
+        SurvivalCurve.flat(
+            reference, maturity, hazard, basis=Basis.ACT_365F, recovery=RECOVERY
+        ),
+        flat_curve(reference, HORIZON, rate, basis=Basis.ACT_365F),
+    )
+
+
+def quadrature_annuity(
+    contract: CreditDefaultSwap,
+    curve: SurvivalCurve,
+    cash: DiscountCurve,
+    *,
+    steps: int,
+) -> float:
+    """The premium leg by a midpoint rule, independent of the closed form.
+
+    Written out the way the contract reads rather than the way the integral
+    factorises: each remaining period contributes its whole coupon at its
+    payment date if the entity survives to it, plus, over the part of the
+    period still to come, the premium accrued since the period *began* against
+    the chance of defaulting at each instant.
+    """
+    total = 0.0
+    for period in contract.remaining(curve.reference):
+        pay = curve.time_to(period.payment)
+        accrual = year_fraction(period.adjusted_start, period.adjusted_end, contract.basis)
+        total += accrual * cash.discount_at(pay) * curve.survival_at(pay)
+        if not contract.accrual_on_default:
+            continue
+        start = _signed_time(curve, period.adjusted_start)
+        end = _signed_time(curve, period.adjusted_end)
+        lower = max(start, 0.0)
+        if end <= lower:
+            continue
+        width = (end - lower) / steps
+        weighted = 0.0
+        for step in range(steps):
+            time = lower + (step + 0.5) * width
+            weighted += (
+                (time - start)
+                * cash.discount_at(time)
+                * curve.hazard_at(time)
+                * curve.survival_at(time)
+                * width
+            )
+        total += weighted * accrual / (end - start)
+    return total
+
+
+class TestAContractAlreadyRunning:
+    """Marking a contract from inside its own schedule.
+
+    Every contract in a book is here. The standard one rolls on the IMM dates
+    and is marked every day in between, so the valuation date almost never
+    coincides with the effective date.
+    """
+
+    def test_the_periods_already_paid_are_dropped(self) -> None:
+        contract = seasoned()
+        assert contract.remaining(LATER) == contract.schedule.periods[1:]
+
+    def test_nothing_is_dropped_before_the_first_payment(self) -> None:
+        # REFERENCE sits inside the first period, so a coupon has begun to
+        # accrue but none has been paid.
+        contract = seasoned()
+        assert contract.remaining(REFERENCE) == contract.schedule.periods
+
+    def test_a_payment_on_the_valuation_date_counts_as_made(self) -> None:
+        contract = seasoned()
+        paid = contract.schedule[0].payment
+        assert contract.remaining(paid) == contract.schedule.periods[1:]
+        assert contract.remaining(paid - timedelta(days=1)) == contract.schedule.periods
+
+    def test_a_period_that_has_accrued_but_not_paid_still_owes_its_coupon(self) -> None:
+        """A payment lag delays the money without leaving a gap in the accrual.
+
+        The periods still tile the calendar, so a day after the first period's
+        accrual ends the *second* period has already been accruing for a day
+        while the first period's whole coupon is still outstanding. The two
+        coexist, which is why the test for a period being gone has to be on
+        its payment date: on its accrual end it would drop a coupon still
+        owed, and on the current period it would find the wrong one.
+        """
+        contract = seasoned(payment_lag=5)
+        first, second = contract.schedule[0], contract.schedule[1]
+        assert first.payment > first.adjusted_end
+        between = first.adjusted_end + timedelta(days=1)
+        assert first in contract.remaining(between)
+        assert contract.current_period(between) is second
+        # The accrued covers the period now running, not the unpaid coupon.
+        assert contract.accrued(between) == pytest.approx(
+            0.01 * year_fraction(second.adjusted_start, between, contract.basis),
+            rel=1e-15,
+            abs=0.0,
+        )
+
+    def test_an_unpaid_coupon_sits_in_the_principal_rather_than_the_accrued(self) -> None:
+        # Following from the above: under a lag the settlement carries one
+        # whole coupon that has finished accruing and not yet moved. It is a
+        # known cashflow rather than accrued interest, so it belongs in the
+        # valuation and not in the day-count half of the quote.
+        contract = seasoned(payment_lag=5, notional=10_000_000.0)
+        first, second = contract.schedule[0], contract.schedule[1]
+        between = first.adjusted_end + timedelta(days=1)
+        settlement = contract.upfront(*at(between))
+        assert settlement.accrued < 0.01 * 10_000_000.0 * year_fraction(
+            second.adjusted_start, second.adjusted_end, contract.basis
+        )
+        assert settlement.principal + settlement.accrued == settlement.cash
+
+    def test_the_protection_leg_ignores_everything_before_the_valuation_date(self) -> None:
+        # A default last month is not a future event to be priced. The two
+        # contracts differ only in a date the integral never reaches, so the
+        # answers are not merely close.
+        curve, cash = at(REFERENCE)
+        running = seasoned(effective=ROLL)
+        fresh = seasoned(effective=REFERENCE)
+        assert running.protection_leg(curve, cash) == fresh.protection_leg(curve, cash)
+
+    def test_a_forward_starting_contract_protects_only_from_its_effective_date(self) -> None:
+        curve, cash = at(REFERENCE)
+        start = date(2026, 9, 21)
+        forward = seasoned(effective=start)
+        assert forward.protection_leg(curve, cash) < seasoned(
+            effective=REFERENCE
+        ).protection_leg(curve, cash)
+        # The missing piece is the protection over the period before it starts.
+        skipped = (1.0 - curve.recovery) * _survival_integral(
+            curve, cash, 0.0, _signed_time(curve, start)
+        )
+        whole = seasoned(effective=REFERENCE, maturity=FIVE_YEAR).protection_leg(curve, cash)
+        assert forward.protection_leg(curve, cash) == pytest.approx(
+            whole - skipped, rel=1e-14, abs=0.0
+        )
+
+    def test_the_premium_leg_matches_an_independent_quadrature(self) -> None:
+        curve, cash = at(REFERENCE)
+        contract = seasoned()
+        closed = contract.risky_annuity(curve, cash)
+        assert quadrature_annuity(contract, curve, cash, steps=2000) == pytest.approx(
+            closed, rel=1e-11, abs=0.0
+        )
+
+    def test_the_quadrature_tolerance_is_measuring_convergence(self) -> None:
+        # The other half of the test above: at a grid this coarse the midpoint
+        # rule is outside the bound, so the bound is reading the integral
+        # rather than passing on round-off alone. Measured, the error falls
+        # from 8.8e-10 at a hundred steps to 2.2e-12 at two thousand, which is
+        # the second-order convergence a midpoint rule should show.
+        curve, cash = at(REFERENCE)
+        contract = seasoned()
+        closed = contract.risky_annuity(curve, cash)
+        coarse = quadrature_annuity(contract, curve, cash, steps=100)
+        assert abs(coarse / closed - 1.0) > 1e-11
+
+    def test_the_accrual_on_default_runs_from_the_period_start(self) -> None:
+        """The gap between the two origins is an exact product, not a residual.
+
+        Weighting by ``s - start`` rather than by ``s`` adds a constant
+        ``-start`` to the integrand, so the difference between the two
+        conventions is the elapsed accrual times the discounted probability of
+        defaulting inside the rest of the period. Nothing is approximated, so
+        the identity holds to rounding.
+        """
+        curve, cash = at(REFERENCE)
+        contract = seasoned()
+        period = contract.schedule[0]
+        start = _signed_time(curve, period.adjusted_start)
+        end = _signed_time(curve, period.adjusted_end)
+        assert start < 0.0 < end
+        accrual = year_fraction(period.adjusted_start, period.adjusted_end, contract.basis)
+        scale = accrual / (end - start)
+        from_period_start = _survival_integral(curve, cash, 0.0, end, accrual_from=start)
+        from_today = _survival_integral(curve, cash, 0.0, end, accrual_from=0.0)
+        default_pv = _survival_integral(curve, cash, 0.0, end)
+        assert (from_period_start - from_today) * scale == pytest.approx(
+            -start * default_pv * scale, rel=1e-13, abs=0.0
+        )
+
+    def test_clamping_the_accrual_origin_too_understates_the_leg(self) -> None:
+        # And so overstates the par spread, since the annuity is the
+        # denominator. The direction is the half of this that is easy to get
+        # backwards.
+        curve, cash = at(REFERENCE)
+        contract = seasoned()
+        period = contract.schedule[0]
+        start = _signed_time(curve, period.adjusted_start)
+        end = _signed_time(curve, period.adjusted_end)
+        accrual = year_fraction(period.adjusted_start, period.adjusted_end, contract.basis)
+        gap = -start * _survival_integral(curve, cash, 0.0, end) * accrual / (end - start)
+        assert gap > 0.0
+        annuity = contract.risky_annuity(curve, cash)
+        protection = contract.protection_leg(curve, cash)
+        assert protection / (annuity - gap) > protection / annuity
+
+    @pytest.mark.parametrize(
+        ("hazard", "basis_points"),
+        [(0.01, 0.0005485), (0.03, 0.0051533), (0.10, 0.0660483), (1.00, 18.27010)],
+    )
+    def test_the_accrual_origin_is_negligible_until_the_name_is_distressed(
+        self, hazard: float, basis_points: float
+    ) -> None:
+        """Both halves of it.
+
+        At investment grade the convention is worth five ten-thousandths of a
+        basis point and can be ignored. On a name quoted in the thousands it is
+        worth eighteen basis points, which is where a seasoned mark matters
+        most, so it cannot be ignored on the grounds that it was small on the
+        way in. The scaling is the product in the identity above: the gap grows
+        with the chance of defaulting inside the remaining stub.
+        """
+        curve, cash = at(REFERENCE, hazard=hazard)
+        contract = seasoned()
+        period = contract.schedule[0]
+        start = _signed_time(curve, period.adjusted_start)
+        end = _signed_time(curve, period.adjusted_end)
+        accrual = year_fraction(period.adjusted_start, period.adjusted_end, contract.basis)
+        gap = -start * _survival_integral(curve, cash, 0.0, end) * accrual / (end - start)
+        annuity = contract.risky_annuity(curve, cash)
+        protection = contract.protection_leg(curve, cash)
+        moved = 1e4 * (protection / (annuity - gap) - protection / annuity)
+        assert moved == pytest.approx(basis_points, rel=1e-3, abs=0.0)
+
+    def test_the_annuity_drops_by_the_whole_coupon_across_a_payment_date(self) -> None:
+        """Exactly, once discounting and default are switched off.
+
+        With no rate and no hazard the annuity is the sum of the remaining
+        accruals and nothing else, so losing a period costs precisely that
+        period's day count. With them switched on the step is smaller by a
+        day's carry, which is the reason this is asserted at zero rather than
+        asserted loosely at three per cent.
+        """
+        contract = seasoned()
+        payment = contract.schedule[0].payment
+        before = payment - timedelta(days=1)
+        accrual = year_fraction(
+            contract.schedule[0].adjusted_start,
+            contract.schedule[0].adjusted_end,
+            contract.basis,
+        )
+        dropped = contract.risky_annuity(
+            *at(before, rate=0.0, hazard=0.0)
+        ) - contract.risky_annuity(*at(payment, rate=0.0, hazard=0.0))
+        assert dropped == pytest.approx(accrual, rel=1e-14, abs=0.0)
+
+    def test_zero_seasoning_reproduces_the_spot_starting_contract(self) -> None:
+        # The regression anchor: a contract effective on the reference date
+        # must price as it always did.
+        curve, cash = at(REFERENCE)
+        fresh = seasoned(effective=REFERENCE, coupon=0.0)
+        assert fresh.risky_annuity(curve, cash) == swap().risky_annuity(curve, cash)
+        assert fresh.protection_leg(curve, cash) == swap().protection_leg(curve, cash)
+        assert fresh.par_spread(curve, cash) == swap().par_spread(curve, cash)
+
+
+class TestTheAccruedPremium:
+    """The half of the settlement amount that is quoted as a day count."""
+
+    def test_it_is_the_elapsed_day_count_on_the_notional(self) -> None:
+        contract = seasoned(notional=10_000_000.0)
+        period = contract.current_period(REFERENCE)
+        assert period is not None
+        elapsed = year_fraction(period.adjusted_start, REFERENCE, contract.basis)
+        assert contract.accrued(REFERENCE) == pytest.approx(
+            10_000_000.0 * 0.01 * elapsed, rel=1e-15, abs=0.0
+        )
+
+    @pytest.mark.parametrize("day", [date(2026, 1, 5), date(2032, 1, 5)])
+    def test_nothing_has_accrued_outside_the_schedule(self, day: date) -> None:
+        contract = seasoned()
+        assert contract.current_period(day) is None
+        assert contract.accrued(day) == 0.0
+
+    def test_the_period_end_belongs_to_the_next_period(self) -> None:
+        # Half-open, so the accrued resets on the day the coupon is paid
+        # rather than reaching the full period and then jumping. The sawtooth
+        # is the convention and not an artefact.
+        contract = seasoned()
+        first = contract.schedule[0]
+        assert contract.current_period(first.adjusted_end) is not contract.schedule[0]
+        eve = first.adjusted_end - timedelta(days=1)
+        # One day short of the whole period, exactly -- not approximately. A
+        # ninety-four day period is one per cent short on its last day, which
+        # is far too large a step to hide inside a tolerance.
+        assert contract.accrued(eve) == pytest.approx(
+            0.01 * year_fraction(first.adjusted_start, eve, contract.basis),
+            rel=1e-15,
+            abs=0.0,
+        )
+        assert contract.accrued(first.adjusted_end) < contract.accrued(eve)
+
+    def test_the_accrued_rises_every_day_through_a_period(self) -> None:
+        contract = seasoned()
+        first = contract.schedule[0]
+        day = first.adjusted_start
+        seen = []
+        while day < first.adjusted_end:
+            seen.append(contract.accrued(day))
+            day += timedelta(days=1)
+        assert seen[0] == 0.0
+        assert seen == sorted(seen)
+        assert len(set(seen)) == len(seen)
+
+    def test_it_is_the_same_quantity_as_its_value_without_discounting_or_default(self) -> None:
+        """The identity that makes the two halves comparable at all.
+
+        ``accrued`` is a day count owed come what may; ``accrued_value`` is the
+        same slice of coupon paid at the payment date and only on survival to
+        it. Switch off the rate and the hazard and they are the same number.
+        """
+        contract = seasoned(notional=10_000_000.0)
+        curve, cash = at(REFERENCE, rate=0.0, hazard=0.0)
+        assert contract.accrued_value(curve, cash) == pytest.approx(
+            contract.accrued(REFERENCE), rel=1e-14, abs=0.0
+        )
+
+    def test_it_is_worth_less_than_it_is_quoted_at(self) -> None:
+        # Measured on the sample contract: 0.06 per cent of the accrued, which
+        # is one of those gaps that is real, is not zero, and is nowhere near
+        # the size that would justify quoting a present value instead.
+        contract = seasoned(notional=10_000_000.0)
+        curve, cash = at(REFERENCE)
+        quoted = contract.accrued(REFERENCE)
+        worth = contract.accrued_value(curve, cash)
+        assert worth < quoted
+        assert 100.0 * (1.0 - worth / quoted) == pytest.approx(0.0596, rel=0.05)
+
+    def test_the_settlement_splits_the_one_amount_exactly(self) -> None:
+        contract = seasoned(notional=10_000_000.0)
+        curve, cash = at(REFERENCE)
+        settlement = contract.upfront(curve, cash)
+        assert isinstance(settlement, UpfrontSettlement)
+        assert settlement.cash == contract.value(curve, cash)
+        assert settlement.principal + settlement.accrued == settlement.cash
+        assert settlement.accrued == contract.accrued(REFERENCE)
+
+    def test_an_unseasoned_contract_settles_on_its_principal_alone(self) -> None:
+        contract = seasoned(effective=REFERENCE, notional=10_000_000.0)
+        settlement = contract.upfront(*at(REFERENCE))
+        assert settlement.accrued == 0.0
+        assert settlement.principal == settlement.cash
+
+
+class TestAContractAtItsEnd:
+    """The two states past the last accrual, which are not the same state."""
+
+    def test_protection_that_has_ended_is_worth_nothing(self) -> None:
+        # Maturity behind us, one coupon still to pay: no protection left, and
+        # an annuity that is not zero. Worth nothing rather than an error.
+        contract = seasoned(effective=ROLL, maturity=date(2026, 6, 20), payment_lag=5)
+        between = contract.schedule[-1].adjusted_end + timedelta(days=1)
+        assert contract.schedule[-1].payment > between
+        curve, cash = at(between)
+        assert contract.protection_leg(curve, cash) == 0.0
+        assert contract.risky_annuity(curve, cash) > 0.0
+        assert contract.par_spread(curve, cash) == 0.0
+
+    def test_a_fully_settled_contract_is_refused_by_name(self) -> None:
+        contract = seasoned(effective=date(2024, 3, 20), maturity=date(2025, 3, 20))
+        curve, cash = at(REFERENCE)
+        with pytest.raises(BadCredit, match="nothing left to settle"):
+            contract.risky_annuity(curve, cash)
+        with pytest.raises(BadCredit, match="nothing left to settle"):
+            contract.par_spread(curve, cash)
+
+    def test_a_settled_contract_says_so_rather_than_blaming_the_annuity(self) -> None:
+        # The old message read "survival to the first premium date is
+        # negligible", which is a statement about the credit. A contract that
+        # has simply finished is not a credit event.
+        contract = seasoned(effective=date(2024, 3, 20), maturity=date(2025, 3, 20))
+        with pytest.raises(BadCredit) as caught:
+            contract.value(*at(REFERENCE))
+        assert "negligible" not in str(caught.value)
+
+
+class TestTheSignedTime:
+    def test_it_is_negative_into_the_past(self) -> None:
+        curve, _ = at(REFERENCE)
+        assert _signed_time(curve, ROLL) < 0.0
+        assert _signed_time(curve, REFERENCE) == 0.0
+        assert _signed_time(curve, FIVE_YEAR) > 0.0
+
+    def test_it_negates_the_forward_fraction_on_an_actual_basis(self) -> None:
+        curve, _ = at(REFERENCE)
+        forward = year_fraction(REFERENCE, date(2026, 9, 15), Basis.ACT_365F)
+        back = SurvivalCurve.flat(
+            date(2026, 9, 15), FIVE_YEAR, 0.03, basis=Basis.ACT_365F, recovery=RECOVERY
+        )
+        assert _signed_time(back, REFERENCE) == -forward
+        assert curve.basis is Basis.ACT_365F

@@ -34,6 +34,9 @@ moves:
 | Z-spread of a bond priced on its own curve | zero to within 1e-8 bp; prints below 1e-12 |
 | Option-adjusted spread of a callable priced on its own curve | zero to within 1e-8 bp; prints below 1e-12 |
 | Macaulay duration at a 6% yield, against the closed form | 7.89499734 |
+| Premium leg of a contract already running, against a midpoint rule | inside 1e-10 relative; prints 9.1e-13, falling as the square of the step |
+| Protection before the valuation date, priced from inside the schedule | zero, to the last bit, against the same contract struck today |
+| A settlement amount against its own split into principal and accrued | zero |
 
 The two spread rows are the ones worth looking at twice. A spread measured
 against the curve a bond was priced on has to be *zero*, and "a plausibly small
@@ -48,10 +51,10 @@ true where it was measured. The bound is the claim, and it is the bound the
 worked example enforces.
 
 ```bash
-python examples/worked.py     # all eight sections, non-zero if a figure moves
+python examples/worked.py     # all nine sections, non-zero if a figure moves
 ```
 
-Behind them: 1902 tests, run on Python 3.10 through 3.13.
+Behind them: 1948 tests, run on Python 3.10 through 3.13.
 
 ## Installing
 
@@ -885,6 +888,11 @@ spreads, and bonds discounted for default with recovery on face.
 ```bash
 tenor credit quotes.txt --reference 2026-06-15 --basis ACT_365F \
   --spreads spreads.txt --bond-maturity 2031-06-15 --bond-coupon 0.05
+
+# and mark one contract, struck on the March roll, against that curve
+tenor credit quotes.txt --reference 2026-06-15 --basis ACT_365F \
+  --spreads spreads.txt --position-maturity 2031-06-20 \
+  --position-effective 2026-03-20 --position-coupon 0.01
 ```
 
 ### The integrals are closed form
@@ -955,6 +963,67 @@ over the last bucket. On an upward-sloping curve those diverge: at ten years
 the forward is half as much again as the average, and a reader seeing the
 forward beside the triangle would conclude the rule of thumb is wildly wrong
 when it is out by nine per cent. Both are printed, labelled.
+
+### A contract that has already started
+
+Everything above this prices a contract from the day it begins. No credit
+default swap is ever looked at on that day. The standard contract rolls on the
+IMM dates and is marked every day in between, so the valuation date sits inside
+a premium period that has partly accrued and has not yet paid — and that was
+the one state this module could not price. `protection_leg` opened with
+`curve.time_to(schedule.effective)`, which refuses a date before the reference,
+so a three-month-old contract raised an error about a mistake in the schedule
+when the schedule was right and the contract was simply running. The next line
+was a `max(start, 0.0)` written for exactly that case and unreachable, because
+no negative value could ever arrive at it.
+
+Three conventions decide the answer, and two of them are easy to confuse.
+
+**The coupon paid at the next date is the whole period's.** The contract does
+not pro-rate it for the part of the period that has gone by. A buyer who pays
+mid-period still owes the whole coupon on the payment date, and gets the
+elapsed part back through the accrued premium instead.
+
+**The accrual owed on a default runs from the period's start, not from the
+valuation date.** A default tomorrow owes everything that has accrued since the
+period began. So the integration clamps to the stub that is left while the
+weight's origin stays back where the period started — two different clamps, and
+clamping both is the mistake. The gap between them is not a residual to be
+bounded: adding a constant to the integrand makes it an exact product, the
+elapsed accrual times the discounted chance of defaulting inside the rest of
+the period. It understates the premium leg and so overstates the par spread.
+
+That product is why the convention can be ignored on a good name and cannot be
+on a bad one. On a contract most of a quarter old, the two origins differ by
+**0.0005bp of par spread at 57bp, and by 18.3bp at 4826bp** — four orders of
+magnitude of sensitivity to the one input nobody checks, arriving exactly where
+a seasoned mark matters most.
+
+**A period is gone when its money moves, not when it stops accruing.** Under a
+payment lag those are different days, and testing the wrong one throws away a
+coupon still owed. It also means the next period is already accruing while the
+previous coupon is outstanding, so the two coexist: the unpaid coupon is a known
+cashflow and belongs in the valuation, while the accrued covers only the period
+now running.
+
+### The two halves of a settlement are not measured the same way
+
+The value of everything still to come is one number, and the market quotes two:
+a principal and an accrued premium, both paid by the buyer. So the split is a
+split — `cash == principal + accrued` holds exactly, by construction, and the
+suite asserts it in both directions rather than computing the halves
+separately and hoping.
+
+What is worth knowing is that the halves are measured differently. The accrued
+is a convention: a day count, undiscounted, owed whatever happens next. The
+money inside the settlement standing for that same slice of coupon is
+discounted to the payment date and paid only on survival to it. Switch off the
+rate and the hazard and the two are the same number to rounding, which is what
+makes them comparable at all; switch them on and the quoted accrued is **0.22%
+more than the slice is worth** on the worked example's contract. Small, real,
+and nowhere near large enough to justify quoting a present value instead —
+which is a thing worth having measured rather than assumed, so both are
+reported and `accrued_value` is the other half.
 
 ## Deliverable bond futures, and why the switch is at six per cent
 
