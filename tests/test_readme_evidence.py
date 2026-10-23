@@ -59,6 +59,8 @@ BOUNDED = (
 EXACT = (
     "protection before the mark, running less struck-today",
     "settlement less its own principal and accrued",
+    "risky less riskless forward price, settling 2026-01-05",
+    "risky less riskless forward price, settling 2028-01-05",
 )
 
 
@@ -143,6 +145,7 @@ ROWS = (
     "Premium leg of a contract already running, against a midpoint rule",
     "Protection before the valuation date, priced from inside the schedule",
     "A settlement amount against its own split into principal and accrued",
+    "A defaultable bond's forward price, against the riskless one at no hazard",
 )
 
 

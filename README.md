@@ -37,6 +37,7 @@ moves:
 | Premium leg of a contract already running, against a midpoint rule | inside 1e-10 relative; prints 9.1e-13, falling as the square of the step |
 | Protection before the valuation date, priced from inside the schedule | zero, to the last bit, against the same contract struck today |
 | A settlement amount against its own split into principal and accrued | zero |
+| A defaultable bond's forward price, against the riskless one at no hazard | zero, at the reference date and seven years out |
 
 The two spread rows are the ones worth looking at twice. A spread measured
 against the curve a bond was priced on has to be *zero*, and "a plausibly small
@@ -1005,6 +1006,43 @@ coupon still owed. It also means the next period is already accruing while the
 previous coupon is outstanding, so the two coexist: the unpaid coupon is a known
 cashflow and belongs in the valuation, while the accrued covers only the period
 now running.
+
+### A defaultable bond priced for a date that is not today
+
+`risky_bond_price` takes a `settlement` argument. For any value but its default
+it returned a number on a different basis from the rest of the package.
+
+Every term in it carries a discount factor and a survival probability measured
+from the curve's reference date, and nothing divided them back out — so the
+answer was a present value *today* of a bond bought later, where
+`Bond.price_from_curve` for the same settlement returns a price *on* that date.
+That function's own docstring already says skipping the division "prices the
+bond for value now, which is a different and smaller number". Two functions in
+one package, both called a price, differing by a discount factor.
+
+The reference that settles it costs nothing to state: **with no hazard and no
+recovery a risky bond is a riskless one**, so the two routes to its forward
+price have to agree. They differed by exactly the discount factor to
+settlement — 1.00000000 at the reference date, 0.94168713 two years out, which
+is 5.8% of the price. Nothing caught it because the default is the only value
+anything passes, so every test of the function was reading the one settlement
+where both factors are one and the answer was already right.
+
+Survival was not conditioned out either. A forward price is quoted for a bond
+you only own if it has not already defaulted, and at a 5% hazard the chance of
+lasting two years is 90.47%.
+
+One division by `DF(settlement) * S(settlement)` corrects both, which is a
+tidier fix than it is a test: a check on the product cannot say which factor
+was missing. So the two are pinned separately — the discounting by switching
+the hazard off, the survival by switching the rate off — and they are different
+sizes, which is what makes the pair informative rather than one number read
+twice. Two years out at a 5% hazard, grossing up for the discounting is worth
+**6.192%** and for survival **10.532%**, and the two together **17.377%**.
+
+Six ways of getting the division wrong were each confirmed to fail the suite,
+including dividing by one factor and not the other, and dividing the cashflows
+while leaving the recovery leg alone.
 
 ### The two halves of a settlement are not measured the same way
 

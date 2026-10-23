@@ -1598,3 +1598,32 @@ so the check had stopped being able to fail. The bound check beside it was the
 same string or-ed with itself. Both now read the document back and compare it
 to what the code produced, and the first of them caught a row quoting an
 observed value without stating the bound it is gated at.
+
+## Phase 28 — A price is a price on a date
+
+`risky_bond_price` has taken a `settlement` argument since it was written, and
+for any value but its default it returned a present value today where the rest
+of the package returns a price on the settlement date. Every term carried a
+discount factor and a survival probability from the curve's reference date and
+nothing divided them back out. The default is the only value anything passes,
+so every test of the function was reading the one settlement where both factors
+are one.
+
+- [x] The result divided by the discount factor and the survival probability to
+      the settlement date, which makes it the quantity
+      `Bond.price_from_curve` returns and the one this package means by a price
+- [x] The survival half as well as the discounting half: a forward price is for
+      a bond you only own if it has not already defaulted
+- [x] The default path bit-identical, asserted rather than assumed
+- [x] The cross-module identity that would have caught this, pinned at four
+      settlements: at no hazard and no recovery a risky bond is a riskless one,
+      so its forward price is the one the bond machinery returns
+- [x] The two halves of the division pinned separately, by switching off the
+      hazard and the rate in turn, since one division fixes both and a test on
+      the product cannot say which factor was missing
+- [x] The two halves shown to be different sizes, so the pair is not one number
+      read twice: 6.192% against 10.532% two years out at a 5% hazard
+- [x] The recovery leg's conditioning checked against a midpoint rule
+- [x] A settlement before the curve's reference refused with a message about
+      the settlement rather than about a year fraction
+- [x] Six ways of getting the division wrong, each confirmed to fail the suite

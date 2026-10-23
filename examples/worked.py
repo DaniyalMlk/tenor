@@ -53,6 +53,7 @@ from tenor import (
     shape_duration,
     year_fraction,
 )
+from tenor.credit import risky_bond_price
 from tenor.spread import i_spread, z_spread
 
 REFERENCE = date(2021, 1, 5)
@@ -636,6 +637,56 @@ check(
     100.0 * (1.0 - RUNNING.accrued_value(CREDIT, curve) / SETTLEMENT.accrued),
     0.2157,
     5e-4,
+)
+
+print(
+    """
+  A bond that may default is priced for a settlement date the same way, and
+  that gives a reference nothing inside the credit module can provide: with no
+  hazard and no recovery a risky bond IS a riskless one, so its forward price
+  has to be the one section 4's machinery returns, at every settlement date
+  and not only at today's.
+"""
+)
+
+RISKY = Bond(
+    effective=REFERENCE,
+    maturity=date(2031, 1, 5),
+    coupon=0.05,
+    frequency=Frequency.SEMI_ANNUAL,
+    basis=Basis.ACT_365F,
+)
+NO_DEFAULT = SurvivalCurve.flat(
+    REFERENCE, date(2031, 1, 5), 0.0, basis=Basis.ACT_365F, recovery=0.0
+)
+for forward in (date(2026, 1, 5), date(2028, 1, 5)):
+    check(
+        f"risky less riskless forward price, settling {forward.isoformat()}",
+        risky_bond_price(RISKY, NO_DEFAULT, curve, settlement=forward)
+        - RISKY.price_from_curve(curve, forward),
+        0.0,
+        0.0,
+    )
+
+# The two factors that division undoes are different sizes, so the identity
+# above is not insensitive to getting one of them wrong. Seven years out from
+# this reference date, at a 5% hazard, grossing up for the discounting is worth
+# 14.43% of the price and grossing up for survival 41.93%.
+DISTRESSED = SurvivalCurve.flat(
+    REFERENCE, date(2031, 1, 5), 0.05, basis=Basis.ACT_365F, recovery=0.0
+)
+SETTLE = DISTRESSED.time_to(date(2028, 1, 5))
+check(
+    "grossing up for discounting to settlement, %",
+    100.0 * (1.0 / curve.discount_at(SETTLE) - 1.0),
+    14.4294,
+    1e-3,
+)
+check(
+    "grossing up for survival to settlement, %",
+    100.0 * (1.0 / DISTRESSED.survival_at(SETTLE) - 1.0),
+    41.9262,
+    1e-3,
 )
 
 print(
