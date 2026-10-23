@@ -1099,3 +1099,156 @@ class TestTheSignedTime:
         )
         assert _signed_time(back, REFERENCE) == -forward
         assert curve.basis is Basis.ACT_365F
+
+
+class TestARiskyBondPricedForward:
+    """``settlement`` other than the default, which nothing else here passes.
+
+    Every term in :func:`risky_bond_price` carries a discount factor and a
+    survival probability measured from the curve's reference date. Both are
+    divided back out, so the answer is a price *on* the settlement date and
+    conditional on no default before it, which is the quantity
+    :meth:`Bond.price_from_curve` returns and the one the rest of this package
+    means by a price.
+
+    One division does both, which is why the two halves are separated below.
+    A test on the product alone cannot say which factor was missing, and the
+    product was right in exactly one case — the default settlement, where both
+    factors are one.
+    """
+
+    BOND = Bond(
+        effective=date(2026, 6, 15),
+        maturity=date(2031, 6, 15),
+        coupon=0.05,
+        frequency=Frequency.SEMI_ANNUAL,
+        basis=Basis.ACT_365F,
+    )
+    FORWARD = (date(2026, 6, 15), date(2027, 6, 15), date(2028, 6, 15), date(2030, 1, 5))
+
+    def survival(self, hazard: float) -> SurvivalCurve:
+        return SurvivalCurve.flat(
+            REFERENCE, date(2031, 6, 15), hazard, basis=Basis.ACT_365F, recovery=0.0
+        )
+
+    @pytest.mark.parametrize("settlement", FORWARD)
+    def test_without_default_it_is_the_riskless_forward_price(self, settlement: date) -> None:
+        """The cross-module identity that would have caught this.
+
+        At no hazard and no recovery a risky bond is a riskless one, so the two
+        routes to its forward price have to agree at *every* settlement and not
+        only at the reference date. Before the division they differed by the
+        discount factor to settlement: 5.8% of the price two years out.
+        """
+        cash = discount()
+        assert risky_bond_price(
+            self.BOND, self.survival(0.0), cash, settlement=settlement
+        ) == pytest.approx(self.BOND.price_from_curve(cash, settlement), rel=1e-13, abs=0.0)
+
+    @pytest.mark.parametrize("settlement", FORWARD)
+    def test_the_survival_half_of_the_division_on_its_own(self, settlement: date) -> None:
+        """Isolated by switching the discounting off.
+
+        At a zero rate every discount factor is one, so the only thing the
+        division can be doing is conditioning on survival to settlement. The
+        reference is written out here: each flow weighted by the probability of
+        surviving to it *given* survival to settlement.
+        """
+        curve = self.survival(0.05)
+        cash = discount(0.0)
+        settled = curve.time_to(settlement)
+        expected = math.fsum(
+            flow.amount * curve.survival_at(curve.time_to(flow.day))
+            for flow in self.BOND.cashflows(settlement)
+        ) / curve.survival_at(settled)
+        assert risky_bond_price(
+            self.BOND, curve, cash, settlement=settlement
+        ) == pytest.approx(expected, rel=1e-13, abs=0.0)
+
+    def test_the_two_halves_are_different_sizes(self) -> None:
+        # So that the test above and the one before it are not two readings of
+        # one number. Grossing up two years out, the discounting is worth
+        # 6.192% and the survival conditioning 10.532% at a 5% hazard, and the
+        # two together 17.377% -- the three figures the README quotes.
+        settlement = date(2028, 6, 15)
+        cash = discount()
+        curve = self.survival(0.05)
+        settled = curve.time_to(settlement)
+        assert 100.0 * (1.0 / cash.discount_at(settled) - 1.0) == pytest.approx(
+            6.192, abs=1e-3
+        )
+        assert 100.0 * (1.0 / curve.survival_at(settled) - 1.0) == pytest.approx(
+            10.532, abs=1e-3
+        )
+
+    def test_the_recovery_leg_is_conditioned_too(self) -> None:
+        """Against a midpoint rule, since recovery makes the hand-written sum longer.
+
+        The recovery term is an integral from settlement to the last flow, and
+        it carries the same two factors from time zero as the cashflows do, so
+        it has to be divided by the same thing. Checked against a rule that
+        shares none of the closed form's algebra.
+        """
+        settlement = date(2028, 6, 15)
+        curve = SurvivalCurve.flat(
+            REFERENCE, date(2031, 6, 15), 0.05, basis=Basis.ACT_365F, recovery=0.4
+        )
+        cash = discount()
+        settled = curve.time_to(settlement)
+        flows = self.BOND.cashflows(settlement)
+        last = max(curve.time_to(flow.day) for flow in flows)
+        steps = 4000
+        width = (last - settled) / steps
+        recovered = 0.0
+        for step in range(steps):
+            moment = settled + (step + 0.5) * width
+            recovered += (
+                cash.discount_at(moment)
+                * curve.hazard_at(moment)
+                * curve.survival_at(moment)
+                * width
+            )
+        expected = (
+            math.fsum(
+                flow.amount
+                * cash.discount_at(curve.time_to(flow.day))
+                * curve.survival_at(curve.time_to(flow.day))
+                for flow in flows
+            )
+            + 0.4 * self.BOND.redemption * recovered
+        ) / (cash.discount_at(settled) * curve.survival_at(settled))
+        assert risky_bond_price(
+            self.BOND, curve, cash, settlement=settlement
+        ) == pytest.approx(expected, rel=1e-8, abs=0.0)
+
+    def test_the_default_settlement_divides_by_one(self) -> None:
+        # The reason the error could sit here: at the reference date both
+        # factors are exactly one, so every existing test of this function was
+        # reading the one settlement where the answer was already right.
+        curve = self.survival(0.05)
+        cash = discount()
+        assert cash.discount_at(0.0) == 1.0
+        assert curve.survival_at(0.0) == 1.0
+        assert risky_bond_price(self.BOND, curve, cash) == risky_bond_price(
+            self.BOND, curve, cash, settlement=REFERENCE
+        )
+
+    def test_conditioning_on_survival_raises_the_forward_price(self) -> None:
+        # Not a tautology: the conditional forward price can be above or below
+        # today's price -- shorter remaining credit risk against the pull to
+        # par -- so the direction worth asserting is against the same number
+        # left unconditioned, which is what the function used to return.
+        settlement = date(2028, 6, 15)
+        curve = self.survival(0.05)
+        cash = discount()
+        settled = curve.time_to(settlement)
+        priced = risky_bond_price(self.BOND, curve, cash, settlement=settlement)
+        unconditioned = priced * cash.discount_at(settled) * curve.survival_at(settled)
+        assert priced > unconditioned
+        assert 100.0 * (priced / unconditioned - 1.0) == pytest.approx(17.377, abs=1e-3)
+
+    def test_a_settlement_before_the_curve_is_refused_by_name(self) -> None:
+        with pytest.raises(BadCredit, match="before the curve's reference date"):
+            risky_bond_price(
+                self.BOND, self.survival(0.05), discount(), settlement=date(2026, 1, 5)
+            )

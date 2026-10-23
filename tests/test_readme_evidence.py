@@ -49,6 +49,12 @@ BOUNDED = (
     ("Z-spread of a bond priced on the curve, bp", 1e-12),
     ("OAS of the callable, bp", 1e-12),
     ("premium leg of a running contract, relative to a midpoint rule", 1e-10),
+    # The same quantity by two routes, but not the same arithmetic: one divides
+    # each flow by the settlement discount factor and sums, the other sums and
+    # divides once. The residue is 1.4e-14 on 3.11 and exactly zero on 3.12 and
+    # 3.13, which is why this is a bound and not one of the EXACT rows below.
+    ("risky less riskless forward price, settling 2026-01-05", 1e-13),
+    ("risky less riskless forward price, settling 2028-01-05", 1e-13),
 )
 
 #: Rows whose reference is an identity rather than a published figure, so the
@@ -143,6 +149,7 @@ ROWS = (
     "Premium leg of a contract already running, against a midpoint rule",
     "Protection before the valuation date, priced from inside the schedule",
     "A settlement amount against its own split into principal and accrued",
+    "A defaultable bond's forward price, against the riskless one at no hazard",
 )
 
 
