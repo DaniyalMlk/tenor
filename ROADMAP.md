@@ -1653,3 +1653,33 @@ the other subtracts a number from itself after adding back what was taken off.
 Worth stating as a gap rather than fixing here: the worked example runs on one
 interpreter while the suite runs on four, so a figure that is reproducible on
 3.11 and not elsewhere would still get through.
+
+## Phase 29 — A bad date says which option it came from
+
+Phase 26 made every option's help text say what the option means. The errors
+did not keep up. Forty-two places read a date as
+`date.fromisoformat(arguments.something)`, and what reached the user was the
+standard library's `Invalid isoformat string: 'next-march'` — the value, and
+nothing about where it came from. Several commands take four or five dates, so
+that told a user who had mistyped one of `--expiry`, `--effective` and
+`--swap-maturity` only that one of them was wrong.
+
+- [x] One helper that reads a named option as a date and names it when the
+      value is not one, deriving the attribute from the option the way argparse
+      does rather than carrying a second mapping
+- [x] Applied at all forty-two sites, so the claim is that the behaviour is
+      uniform and not that it improved where somebody happened to look
+- [x] A static check that nothing reads a date out of the namespace without
+      going through the helper, which is what "all forty-two" means
+- [x] The option name in every message checked against the parser, since that
+      string is the part that goes stale: renaming an option would otherwise
+      leave a message naming one that no longer exists
+- [x] The date options enumerated from the source rather than listed here, and
+      a guard that the enumeration found them, so the sweep cannot pass by
+      sweeping nothing
+- [x] The transparent case asserted too — a good date goes through unmentioned
+      — since a sweep of error messages passes handsomely on a parser that
+      rejects everything
+- [x] Four ways of breaking it, each confirmed to fail the suite: a site naming
+      an option that does not exist, a site bypassing the helper, a message
+      that stops naming the option, and a helper that swallows a bad date

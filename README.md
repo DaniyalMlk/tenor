@@ -55,7 +55,7 @@ worked example enforces.
 python examples/worked.py     # all nine sections, non-zero if a figure moves
 ```
 
-Behind them: 1964 tests, run on Python 3.10 through 3.13.
+Behind them: 1989 tests, run on Python 3.10 through 3.13.
 
 ## Installing
 
@@ -291,6 +291,16 @@ lattice reprices the curve — rather than only the numbers.
 
 `examples/worked.py` runs the whole library in one pass and exits non-zero if
 any published figure moves.
+
+
+Every command takes dates as ISO strings, and a date that is not one says which
+option it came from. That reads like a small thing and is not: several commands
+take four or five dates, and the standard library's message for a bad one names
+the value without naming the option, so a mistyped `--effective` on a command
+that also takes `--expiry` and `--swap-maturity` told you only that one of the
+three was wrong. All nineteen date options go through one helper, nothing reads
+a date around it, and the option names in the messages are checked against the
+parser rather than against a list — that string is the part that goes stale.
 
 ## Design
 

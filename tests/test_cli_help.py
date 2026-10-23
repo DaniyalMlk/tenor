@@ -21,9 +21,12 @@ the subcommand added next week is not in it.
 from __future__ import annotations
 
 import argparse
+import inspect
 import io
+import re
 from collections.abc import Iterator
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pytest
 
@@ -114,3 +117,98 @@ def test_a_literal_per_cent_sign_would_be_caught() -> None:
     fixed = argparse.ArgumentParser(prog="fixed", add_help=True)
     fixed.add_argument("--cash", help="20%% in cash")
     assert "20% in cash" in " ".join(fixed.format_help().split())
+
+
+# -- a bad date names the option it came from ----------------------------------
+
+CLI_SOURCE = Path(inspect.getsourcefile(main) or "").read_text()
+
+#: Every option that `_date` is asked to read, taken from the source rather
+#: than written out here, so a new date option is swept without anybody
+#: remembering to come back.
+DATE_OPTIONS = tuple(sorted(set(re.findall(r'_date\(arguments, "([a-z-]+)"\)', CLI_SOURCE))))
+
+
+def long_options(command: argparse.ArgumentParser) -> set[str]:
+    """Every long option the parser accepts anywhere, without its dashes."""
+    found: set[str] = set()
+    for path in command_paths(command):
+        node = command
+        for name in path:
+            for action in node._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    node = action.choices[name]
+                    break
+        for action in arguments_of(node):
+            found.update(
+                flag.lstrip("-") for flag in action.option_strings if flag.startswith("--")
+            )
+    return found
+
+
+def test_the_sweep_found_the_date_options() -> None:
+    # If the pattern stops matching, every test below passes by sweeping
+    # nothing. Nineteen distinct options read a date at forty-two call sites.
+    assert len(DATE_OPTIONS) >= 15
+
+
+@pytest.mark.parametrize("option", DATE_OPTIONS)
+def test_the_option_a_date_error_names_is_one_the_parser_has(option: str) -> None:
+    """The string in the message is the part that can go stale.
+
+    `_date` is handed the option name as text, so renaming an option leaves a
+    message naming one that no longer exists and nothing else would notice.
+    Checked against the parser rather than against a list here, for the reason
+    in this module's docstring.
+    """
+    assert option in long_options(parser()), (
+        f"a date error names --{option}, which the parser does not accept"
+    )
+
+
+def test_nothing_reads_a_date_without_going_through_the_helper() -> None:
+    # The claim is that the behaviour is uniform, not that it is better in the
+    # places somebody happened to touch. Forty-two sites read a date straight
+    # out of the namespace before this; none do now.
+    assert "date.fromisoformat(arguments." not in CLI_SOURCE
+
+
+@pytest.mark.parametrize(
+    ("argv", "option"),
+    [
+        (["curve", "QUOTES", "--reference", "yesterday", "--basis", "ACT_365F"], "reference"),
+        (
+            ["price", "QUOTES", "--reference", "2021-01-05", "--basis", "ACT_365F",
+             "--maturity", "soon", "--coupon", "0.05"],
+            "maturity",
+        ),
+        (
+            ["horizon", "QUOTES", "--reference", "2021-01-05", "--basis", "ACT_365F",
+             "--maturity", "2031-01-05", "--coupon", "0.05", "--horizon", "a while"],
+            "horizon",
+        ),
+    ],
+)
+def test_a_bad_date_names_the_option_and_exits_two(
+    argv: list[str],
+    option: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    quotes = tmp_path / "quotes.txt"
+    quotes.write_text("swap 2031-01-05 0.022 SEMI_ANNUAL THIRTY_360_BOND\n")
+    assert main([one.replace("QUOTES", str(quotes)) for one in argv]) == 2
+    printed = capsys.readouterr().err
+    assert f"--{option} is " in printed
+    assert "not a date" in printed
+    # And still says what was wrong with it, which the standard library's
+    # message did get right.
+    assert "Invalid isoformat" not in printed
+
+
+def test_a_good_date_is_not_mentioned_at_all(tmp_path: Path) -> None:
+    # The other half: the helper has to be transparent when the date is fine,
+    # or the sweep above would pass on a parser that rejects everything.
+    quotes = tmp_path / "quotes.txt"
+    quotes.write_text("swap 2031-01-05 0.022 SEMI_ANNUAL THIRTY_360_BOND\n")
+    assert main(["curve", str(quotes), "--reference", "2021-01-05", "--basis", "ACT_365F"]) == 0
