@@ -55,7 +55,7 @@ worked example enforces.
 python examples/worked.py     # all nine sections, non-zero if a figure moves
 ```
 
-Behind them: 1948 tests, run on Python 3.10 through 3.13.
+Behind them: 1964 tests, run on Python 3.10 through 3.13.
 
 ## Installing
 
