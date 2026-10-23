@@ -1627,3 +1627,10 @@ are one.
 - [x] A settlement before the curve's reference refused with a message about
       the settlement rather than about a year fraction
 - [x] Six ways of getting the division wrong, each confirmed to fail the suite
+- [x] The rest of the package swept for the same class of error, since a
+      convention is rarely wrong in one place. `spread.discounted_with_spread`
+      and both of `lattice`'s calibration paths already divide by the
+      settlement date's discount factor, and `horizon` and `lattice`'s span
+      arithmetic works in differences where it cancels. `risky_bond_price` was
+      the only site that did not, which is worth recording: the claim is that
+      the convention is now uniform, not that one function was fixed
