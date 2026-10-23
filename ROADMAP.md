@@ -1634,3 +1634,22 @@ are one.
       arithmetic works in differences where it cancels. `risky_bond_price` was
       the only site that did not, which is worth recording: the claim is that
       the convention is now uniform, not that one function was fixed
+
+### What the gate caught that the suite did not
+
+The cross-module identity was published as an exact zero, because that is what
+it printed. It is not an exact zero. The two routes to a forward price are the
+same quantity and not the same arithmetic: one divides each flow by the
+settlement discount factor and sums, the other sums and divides once, and
+floating point does not preserve summation order. The residue is 1.4e-14 on
+CPython 3.11 and exactly zero on 3.12 and 3.13, so the row as written was a
+claim about an interpreter rather than about the library.
+
+CI failed it on 3.11, which is the only version the worked example runs on, and
+the figure is now published as a bound. The two rows beside it stay exact
+because they are exact: one compares two runs of the identical code path, and
+the other subtracts a number from itself after adding back what was taken off.
+
+Worth stating as a gap rather than fixing here: the worked example runs on one
+interpreter while the suite runs on four, so a figure that is reproducible on
+3.11 and not elsewhere would still get through.

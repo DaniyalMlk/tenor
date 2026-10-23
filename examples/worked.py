@@ -646,6 +646,13 @@ print(
   hazard and no recovery a risky bond IS a riskless one, so its forward price
   has to be the one section 4's machinery returns, at every settlement date
   and not only at today's.
+
+  Quoted as a bound rather than as zero, and the distinction is the point. The
+  two routes are the same quantity but not the same arithmetic: one divides
+  each flow by the settlement discount factor and sums, the other sums and
+  divides once. Summation order is not something floating point preserves, and
+  the residue is 1.4e-14 on CPython 3.11 and exactly zero on 3.12 and 3.13 --
+  so zero here would have been a claim about an interpreter.
 """
 )
 
@@ -665,7 +672,7 @@ for forward in (date(2026, 1, 5), date(2028, 1, 5)):
         risky_bond_price(RISKY, NO_DEFAULT, curve, settlement=forward)
         - RISKY.price_from_curve(curve, forward),
         0.0,
-        0.0,
+        1e-13,
     )
 
 # The two factors that division undoes are different sizes, so the identity

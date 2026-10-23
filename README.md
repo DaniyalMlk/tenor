@@ -37,7 +37,7 @@ moves:
 | Premium leg of a contract already running, against a midpoint rule | inside 1e-10 relative; prints 9.1e-13, falling as the square of the step |
 | Protection before the valuation date, priced from inside the schedule | zero, to the last bit, against the same contract struck today |
 | A settlement amount against its own split into principal and accrued | zero |
-| A defaultable bond's forward price, against the riskless one at no hazard | zero, at the reference date and seven years out |
+| A defaultable bond's forward price, against the riskless one at no hazard | inside 1e-13, at the reference date and seven years out |
 
 The two spread rows are the ones worth looking at twice. A spread measured
 against the curve a bond was priced on has to be *zero*, and "a plausibly small
