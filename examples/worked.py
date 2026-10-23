@@ -19,15 +19,18 @@ import sys
 from datetime import date
 
 from tenor import (
+    WEEKENDS_ONLY,
     Accrual,
     Basis,
     Bond,
     BondFuture,
+    CreditDefaultSwap,
     Deposit,
     Exercise,
     Frequency,
     Interpolation,
     Lattice,
+    SurvivalCurve,
     Swap,
     asset_swap_spread,
     bootstrap,
@@ -48,6 +51,7 @@ from tenor import (
     par_par_spread,
     proceeds_spread,
     shape_duration,
+    year_fraction,
 )
 from tenor.spread import i_spread, z_spread
 
@@ -489,6 +493,181 @@ for _ in range(200):
 check("yield at which the cheapest bond switches, %", 50.0 * (low + high), 6.0, 1e-6)
 if BELOW != "short":
     FAILURES.append("below the notional coupon the shortest bond should be cheapest")
+
+# -- 9. A contract marked from inside its own schedule ------------------------
+
+rule("9. A credit default swap already running")
+
+print(
+    """
+  Everything above prices an instrument from the day it starts. A credit
+  default swap is almost never looked at on that day: the standard contract
+  rolls on the IMM dates and is marked every day in between, so the valuation
+  date sits inside a premium period that has partly accrued and not yet paid.
+
+  Three things are checked here. The premium leg against a midpoint rule
+  written out below, which shares none of the closed form's algebra. The
+  protection leg against the same contract struck today, which has to be the
+  same number and not merely a close one, because the dates the two differ on
+  are ones the integral never reaches. And the settlement amount against its
+  own split into principal and accrued.
+"""
+)
+
+CREDIT = SurvivalCurve.flat(
+    REFERENCE, date(2031, 1, 5), 0.02, basis=Basis.ACT_365F, recovery=0.4
+)
+ROLL = date(2020, 12, 20)
+RUNNING = CreditDefaultSwap.standard(
+    ROLL,
+    date(2026, 3, 20),
+    0.01,
+    calendar=WEEKENDS_ONLY,
+    frequency=Frequency.QUARTERLY,
+    notional=10_000_000.0,
+)
+STRUCK_TODAY = CreditDefaultSwap.standard(
+    REFERENCE,
+    date(2026, 3, 20),
+    0.01,
+    calendar=WEEKENDS_ONLY,
+    frequency=Frequency.QUARTERLY,
+    notional=10_000_000.0,
+)
+
+
+def signed(day: date, name: SurvivalCurve) -> float:
+    """Year fraction from the valuation date to ``day``, negative in the past."""
+    if day >= REFERENCE:
+        return name.time_to(day)
+    return -year_fraction(day, REFERENCE, name.basis)
+
+
+def default_pv_by_quadrature(name: SurvivalCurve, end: float, steps: int) -> float:
+    """``integral DF(s) dQ(s)`` from the valuation date, by the same rule."""
+    width = end / steps
+    total = 0.0
+    for step in range(steps):
+        moment = (step + 0.5) * width
+        total += (
+            curve.discount_at(moment)
+            * name.hazard_at(moment)
+            * name.survival_at(moment)
+            * width
+        )
+    return total
+
+
+def premium_leg_by_quadrature(contract: CreditDefaultSwap, steps: int) -> float:
+    """The premium leg read off the contract rather than off the integral.
+
+    Each remaining period pays its whole coupon at its payment date if the
+    entity survives to it. Over the part of the period still to come, a default
+    owes the premium accrued since the period *began*, which for the period in
+    progress means reaching back before the valuation date.
+    """
+    total = 0.0
+    for period in contract.remaining(REFERENCE):
+        pay = CREDIT.time_to(period.payment)
+        accrual = year_fraction(period.adjusted_start, period.adjusted_end, contract.basis)
+        total += accrual * curve.discount_at(pay) * CREDIT.survival_at(pay)
+        start = signed(period.adjusted_start, CREDIT)
+        lower = max(start, 0.0)
+        end = CREDIT.time_to(period.adjusted_end)
+        if end <= lower:
+            continue
+        width = (end - lower) / steps
+        weighted = 0.0
+        for step in range(steps):
+            moment = lower + (step + 0.5) * width
+            weighted += (
+                (moment - start)
+                * curve.discount_at(moment)
+                * CREDIT.hazard_at(moment)
+                * CREDIT.survival_at(moment)
+                * width
+            )
+        total += weighted * accrual / (end - start)
+    return total
+
+
+closed = RUNNING.risky_annuity(CREDIT, curve)
+check(
+    "premium leg of a running contract, relative to a midpoint rule",
+    abs(premium_leg_by_quadrature(RUNNING, 2000) / closed - 1.0),
+    0.0,
+    1e-10,
+)
+# The other half: at a grid this coarse the rule is outside the bound above, so
+# the bound is reading the integral rather than passing on rounding alone.
+coarse = abs(premium_leg_by_quadrature(RUNNING, 100) / closed - 1.0)
+if coarse <= 1e-10:
+    FAILURES.append("the coarse quadrature is inside the fine bound, so it proves nothing")
+check("the same rule at a twentieth of the steps", coarse, 3.6e-10, 1e-10)
+
+# An identity, so the answer is zero rather than small: the two contracts
+# differ only in an effective date that lies behind the valuation date, and the
+# protection integral starts at the valuation date under both.
+check(
+    "protection before the mark, running less struck-today",
+    RUNNING.protection_leg(CREDIT, curve) - STRUCK_TODAY.protection_leg(CREDIT, curve),
+    0.0,
+    0.0,
+)
+
+SETTLEMENT = RUNNING.upfront(CREDIT, curve)
+check(
+    "settlement less its own principal and accrued",
+    SETTLEMENT.principal + SETTLEMENT.accrued - SETTLEMENT.cash,
+    0.0,
+    0.0,
+)
+check(
+    "accrued premium quoted, on 10mm at 100bp",
+    SETTLEMENT.accrued,
+    4166.666667,
+    1e-5,
+)
+# The quoted accrued is a day count owed come what happens; the same slice of
+# coupon is paid at the payment date and only on survival to it. The gap is the
+# reason the principal is not a present value.
+check(
+    "the accrued is worth less than it is quoted at, %",
+    100.0 * (1.0 - RUNNING.accrued_value(CREDIT, curve) / SETTLEMENT.accrued),
+    0.2157,
+    5e-4,
+)
+
+print(
+    """
+  The last figure worth stating is the convention that is easy to get wrong.
+  The accrual owed on a default runs from the period's start, not from the
+  valuation date, so the integration clamps to the remaining stub while the
+  weight's origin stays back where the period began. Clamping both understates
+  the leg and so overstates the par spread. How much depends entirely on the
+  chance of defaulting inside the rest of the period, which is why it can be
+  ignored on a good name and cannot be on a bad one.
+"""
+)
+for hazard, label, expected in (
+    (0.02, "2% hazard", 0.0041536),
+    (1.0, "100% hazard", 43.03172),
+):
+    name = SurvivalCurve.flat(
+        REFERENCE, date(2031, 1, 5), hazard, basis=Basis.ACT_365F, recovery=0.4
+    )
+    first = RUNNING.schedule[0]
+    begin = signed(first.adjusted_start, name)
+    finish = name.time_to(first.adjusted_end)
+    accrual = year_fraction(first.adjusted_start, first.adjusted_end, RUNNING.basis)
+    # The gap between the two origins is a product, not a residual: the elapsed
+    # accrual times the discounted chance of defaulting inside the stub.
+    gap = -begin * default_pv_by_quadrature(name, finish, 4000) * accrual / (finish - begin)
+    protection = RUNNING.protection_leg(name, curve)
+    annuity = RUNNING.risky_annuity(name, curve)
+    moved = 1e4 * (protection / (annuity - gap) - protection / annuity)
+    check(f"accrual origin, {label}, bp of par spread", moved, expected, 1e-4)
+
 
 # -- done ---------------------------------------------------------------------
 

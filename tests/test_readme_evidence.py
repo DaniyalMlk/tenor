@@ -36,6 +36,7 @@ QUOTED = (
     "3.191891196e-16",  # monotone convex, worst repricing error
     "47.52",  # Hull's futures convexity adjustment
     "7.89499734",  # Macaulay duration against its closed form
+    "4166.666667",  # accrued premium on 10mm at 100bp, a day count
 )
 
 #: Figures that are floating-point noise and whose digits are therefore not
@@ -47,6 +48,17 @@ QUOTED = (
 BOUNDED = (
     ("Z-spread of a bond priced on the curve, bp", 1e-12),
     ("OAS of the callable, bp", 1e-12),
+    ("premium leg of a running contract, relative to a midpoint rule", 1e-10),
+)
+
+#: Rows whose reference is an identity rather than a published figure, so the
+#: answer is zero and not a small number. These are checked as exact zeros:
+#: accepting "near enough" from an identity is accepting the one failure the
+#: row exists to catch, since a subtly wrong implementation returns a
+#: plausibly small number and a correct one returns nothing at all.
+EXACT = (
+    "protection before the mark, running less struck-today",
+    "settlement less its own principal and accrued",
 )
 
 
@@ -94,9 +106,28 @@ def test_a_noise_figure_stays_inside_the_bound_the_readme_promises(
     assert match is not None, f"the worked example no longer prints {label!r}"
     value = float(match.group(1))
     assert abs(value) < bound, f"{label} printed {value}, outside {bound}"
-    assert f"{bound:.0e}".replace("e-", "e-") in README.read_text() or "1e-12" in (
-        README.read_text()
+    # And that the README actually promises a bound of this size. The two
+    # halves of this used to be the same string or-ed together, which cannot
+    # fail: once any row quoted 1e-12 the check passed for every bound.
+    assert f"{bound:.0e}" in README.read_text(), (
+        f"the README does not promise {bound:.0e} anywhere"
     )
+
+
+@pytest.mark.parametrize("label", EXACT)
+def test_an_identity_row_reproduces_as_an_exact_zero(label: str, worked_output: str) -> None:
+    """Not "small": zero.
+
+    Both of these are differences between two routes to one quantity that
+    agree by construction rather than by cancellation - a protection integral
+    whose lower limit is the valuation date under either contract, and a
+    settlement split into two halves derived from it. Nothing is approximated
+    on the way, so a non-zero answer is a bug and not a rounding error, and a
+    tolerance here would accept exactly the failure the row is for.
+    """
+    match = re.search(rf"{re.escape(label)}\s+(\S+)", worked_output)
+    assert match is not None, f"the worked example no longer prints {label!r}"
+    assert float(match.group(1)) == 0.0, f"{label} printed {match.group(1)}"
 
 
 #: The row labels of the README's evidence table. Presence is what is checked
@@ -109,6 +140,9 @@ ROWS = (
     "Z-spread of a bond priced on its own curve",
     "Option-adjusted spread of a callable priced on its own curve",
     "Macaulay duration at a 6% yield",
+    "Premium leg of a contract already running, against a midpoint rule",
+    "Protection before the valuation date, priced from inside the schedule",
+    "A settlement amount against its own split into principal and accrued",
 )
 
 
@@ -141,7 +175,19 @@ def test_the_sections_are_numbered_without_a_gap(worked_output: str) -> None:
     """
     numbers = [int(n) for n in re.findall(r"^(\d+)\. ", worked_output, re.MULTILINE)]
     assert numbers == list(range(1, len(numbers) + 1))
-    assert f"all {len(numbers)}" in README.read_text() or "eight" in README.read_text()
+    # The README writes the count as a word. Reading it back and comparing it
+    # to the sections actually printed is the whole point; the previous version
+    # accepted the literal "eight" as an alternative to the real count, and
+    # "eight" appears elsewhere in the README, so it could no longer fail.
+    words = {
+        1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+        7: "seven", 8: "eight", 9: "nine", 10: "ten",
+    }
+    expected = f"all {words[len(numbers)]} sections"
+    assert expected in README.read_text(), (
+        f"the worked example prints {len(numbers)} sections and the README does "
+        f"not say {expected!r}"
+    )
 
 
 def test_the_suite_size_on_the_front_page_is_not_wildly_stale() -> None:
