@@ -812,7 +812,7 @@ def risky_bond_price(
     *,
     settlement: date | None = None,
 ) -> float:
-    """The present value of a bond that may default, per unit of face.
+    """The price of a bond that may default, per unit of face, on ``settlement``.
 
     Two terms. Each promised cashflow is discounted and weighted by the
     probability of surviving to receive it. Against that, a default pays the
@@ -821,16 +821,44 @@ def risky_bond_price(
     remaining cashflows — the difference is largest for a long, high-coupon
     bond, where the promised payments are worth far more than face.
 
+    **A price on the settlement date, not a present value today.** Every term
+    above carries a discount factor and a survival probability measured from
+    the curve's reference date, so both are divided back out. That makes this
+    the same quantity :meth:`Bond.price_from_curve` returns — which performs
+    the discounting half of the division and says that skipping it prices the
+    bond for value now, a different and smaller number. Dividing by the
+    survival probability as well is the other half: a forward price is quoted
+    for a bond you only own if it has not already defaulted, so it is
+    conditional on surviving to settlement.
+
+    One division corrects both, since every term carries both factors from time
+    zero. At the default settlement both are one, so nothing changes there —
+    which is why the error could sit here: the default is the only value the
+    rest of this package ever passes.
+
     Args:
         bond: The instrument.
         curve: Survival and recovery.
         discount: Curve to discount on.
-        settlement: Value from this date; defaults to the curve's reference.
+        settlement: Price it for this date; defaults to the curve's reference.
+            Not before it — a bond cannot be priced for a date the curve has no
+            view of.
 
     Returns:
-        Present value per unit of face, including accrued interest.
+        Price per unit of face on ``settlement``, including accrued interest,
+        conditional on no default before then.
+
+    Raises:
+        BadCredit: If ``settlement`` is before the curve's reference date.
     """
     start = curve.reference if settlement is None else settlement
+    if start < curve.reference:
+        raise BadCredit(
+            f"settlement {start.isoformat()} is before the curve's reference date "
+            f"{curve.reference.isoformat()}; a bond cannot be priced for a date "
+            "the curve has no view of. Build the curve on the settlement date, or "
+            "price it for the reference date."
+        )
     total = 0.0
     last = curve.time_to(start)
     for flow in bond.cashflows(start):
@@ -847,4 +875,7 @@ def risky_bond_price(
         * bond.redemption
         * _survival_integral(curve, discount, curve.time_to(start), last)
     )
-    return total + recovery_leg
+    settled = curve.time_to(start)
+    return (total + recovery_leg) / (
+        discount.discount_at(settled) * curve.survival_at(settled)
+    )
