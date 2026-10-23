@@ -50,7 +50,7 @@ from .bond import Bond
 from .calendar import Calendar, Rolling
 from .curve import DiscountCurve
 from .daycount import Basis, year_fraction
-from .schedule import Frequency, Schedule, generate
+from .schedule import Frequency, Period, Schedule, generate
 from .solve import solve
 
 __all__ = [
@@ -58,6 +58,7 @@ __all__ = [
     "CreditDefaultSwap",
     "HazardPillar",
     "SurvivalCurve",
+    "UpfrontSettlement",
     "bootstrap_hazards",
     "implied_hazard",
     "risky_bond_price",
@@ -261,6 +262,31 @@ class SurvivalCurve:
         return [start, *inner, end]
 
 
+def _signed_time(curve: SurvivalCurve, day: date) -> float:
+    """Year fraction from the curve's reference date to ``day``, signed.
+
+    :meth:`SurvivalCurve.time_to` refuses a date in the past, because a
+    negative accrual is almost always a mistake in a schedule rather than a
+    quantity anybody wanted. A contract that has already started is the
+    exception: its first period began before the valuation date by
+    construction, and how long ago is exactly what the accrual-on-default
+    weight needs.
+
+    The magnitude in the past is measured by running the day count the way it
+    is defined, forwards from the earlier date, and negating. On the actual
+    bases that is exactly the negation of the forward fraction. On the thirty
+    day conventions it is not quite: their end-of-month rules are not
+    symmetric in the two dates, so the two directions can differ by a day's
+    worth of accrual. It does not matter here, because the signed time is used
+    only to locate the period's start relative to the valuation date, and the
+    accrual it stands for is converted back to the contract's own basis by the
+    ratio of the whole period's lengths before any money is computed.
+    """
+    if day >= curve.reference:
+        return curve.time_to(day)
+    return -year_fraction(day, curve.reference, curve.basis)
+
+
 def _survival_integral(
     curve: SurvivalCurve,
     discount: DiscountCurve,
@@ -326,6 +352,36 @@ def _merge(
 
 
 @dataclass(frozen=True)
+class UpfrontSettlement:
+    """What changes hands to enter or unwind a contract, split the way it is quoted.
+
+    The whole amount is :attr:`cash`, and it is what
+    :meth:`CreditDefaultSwap.value` returns: the value of every flow still to
+    come, which already includes the buyer's promise to pay the part of the
+    current coupon that accrued before today. The market does not quote that
+    number. It quotes the principal and the accrued premium separately, and
+    the buyer pays both, so the split is a split of one amount rather than two
+    independent figures — ``cash == principal + accrued`` holds exactly, by
+    construction, and the tests say so in both directions.
+
+    The two halves are not measured the same way, which is the part worth
+    knowing. :attr:`accrued` is the convention: the coupon times the elapsed
+    fraction of the period, undiscounted, and owed whatever happens. The money
+    inside :attr:`cash` that stands for the same slice of coupon is discounted
+    to the payment date and paid only on survival to it. The gap between the
+    two is small and it is not zero, and
+    :meth:`CreditDefaultSwap.accrued_value` is the other half of it.
+    """
+
+    #: The clean upfront: the settlement amount with the accrued taken out.
+    principal: float
+    #: Premium accrued from the current period's start to the valuation date.
+    accrued: float
+    #: ``principal + accrued``, and the value of the remaining contract.
+    cash: float
+
+
+@dataclass(frozen=True)
 class CreditDefaultSwap:
     """A single-name credit default swap, from the protection buyer's side.
 
@@ -381,21 +437,89 @@ class CreditDefaultSwap:
             notional=notional,
         )
 
+    # -- where the valuation date sits inside the schedule ---------------------
+
+    def remaining(self, reference: date) -> tuple[Period, ...]:
+        """The periods still to pay on ``reference``.
+
+        A period is gone once its money has moved, which is its payment date
+        and not its accrual end: under a payment lag a period can have finished
+        accruing and still owe its whole coupon. The test is therefore on the
+        payment date, and a payment falling on the valuation date counts as
+        made.
+        """
+        return tuple(one for one in self.schedule if one.payment > reference)
+
+    def current_period(self, reference: date) -> Period | None:
+        """The period ``reference`` falls inside, or ``None`` if it falls outside.
+
+        ``None`` before the contract starts and after it ends, which are the
+        two states in which nothing has accrued.
+        """
+        for one in self.schedule:
+            if one.adjusted_start <= reference < one.adjusted_end:
+                return one
+        return None
+
+    def accrued(self, reference: date) -> float:
+        """Premium accrued since the current period began, for the notional.
+
+        The market convention, which is a simple day count: undiscounted, and
+        not weighted by survival, because the buyer owes it whether or not the
+        entity survives the rest of the period.
+        """
+        period = self.current_period(reference)
+        if period is None:
+            return 0.0
+        elapsed = year_fraction(period.adjusted_start, reference, self.basis)
+        return self.notional * self.coupon * elapsed
+
+    def _require_live(self, reference: date) -> tuple[Period, ...]:
+        periods = self.remaining(reference)
+        if not periods:
+            raise BadCredit(
+                f"this contract has nothing left to settle: its last payment was "
+                f"{self.schedule[-1].payment.isoformat()} and the curve is "
+                f"referenced {reference.isoformat()}. A fully settled contract has "
+                "no annuity to divide by and no fair coupon."
+            )
+        return periods
+
+    # -- the two legs ----------------------------------------------------------
+
     def risky_annuity(self, curve: SurvivalCurve, discount: DiscountCurve) -> float:
         """The premium leg per unit of coupon, per unit of notional.
 
         Also the credit DV01 divided by a basis point, which is what it is
         usually wanted for: multiply by the notional and by 0.0001 to get the
         money value of a one basis point move in the spread.
+
+        Only the periods that have not paid are counted, so a contract that
+        started before the curve's reference date prices as the remaining
+        contract it is. Two things about the current period are easy to get
+        wrong and are worth stating.
+
+        The coupon paid at the next payment date is the **whole** period's
+        coupon. The contract does not pro-rate it for the part of the period
+        that has already gone by, so neither does this.
+
+        The accrual owed on a default is measured **from the period's own
+        start**, not from the valuation date. A default tomorrow owes the
+        premium that has accrued since the period began, including the part
+        that accrued before today. So the integration runs over the remaining
+        stub while the weight's origin stays back at the period start — two
+        different clamps, and clamping both is the mistake. It understates the
+        leg, by the elapsed accrual times the chance of defaulting inside the
+        rest of the period; the README measures it on a seasoned contract.
         """
         total = 0.0
-        for period in self.schedule:
+        for period in self._require_live(curve.reference):
             pay = curve.time_to(period.payment)
             accrual = year_fraction(period.adjusted_start, period.adjusted_end, self.basis)
             total += accrual * discount.discount_at(pay) * curve.survival_at(pay)
             if self.accrual_on_default:
-                start = curve.time_to(period.adjusted_start)
-                end = curve.time_to(period.adjusted_end)
+                start = _signed_time(curve, period.adjusted_start)
+                end = _signed_time(curve, period.adjusted_end)
                 # The integral is in year fractions on the curve's basis; the
                 # accrual owed is on the contract's. The two bases differ in
                 # general, so the fraction of the period elapsed is converted
@@ -404,18 +528,61 @@ class CreditDefaultSwap:
                 span = end - start
                 if span > _TOLERANCE:
                     weighted = _survival_integral(
-                        curve, discount, start, end, accrual_from=start
+                        curve, discount, max(start, 0.0), end, accrual_from=start
                     )
                     total += weighted * accrual / span
         return total
 
     def protection_leg(self, curve: SurvivalCurve, discount: DiscountCurve) -> float:
-        """Present value of the payout on default, per unit of notional."""
-        start = curve.time_to(self.schedule.effective)
-        end = curve.time_to(self.schedule.maturity)
+        """Present value of the payout on default, per unit of notional.
+
+        Integrated from the valuation date or the effective date, whichever is
+        later. A default before the curve's reference date is not a future
+        event to be priced, and a contract whose protection has already ended
+        is worth nothing rather than an error.
+        """
+        start = _signed_time(curve, self.schedule.effective)
+        end = _signed_time(curve, self.schedule.maturity)
+        if end <= 0.0:
+            return 0.0
         return (1.0 - curve.recovery) * _survival_integral(
             curve, discount, max(start, 0.0), end
         )
+
+    def accrued_value(self, curve: SurvivalCurve, discount: DiscountCurve) -> float:
+        """What the elapsed slice of the current coupon is actually worth, for the notional.
+
+        The counterpart to :meth:`accrued`. That one is the quoted convention:
+        a day count, undiscounted, owed come what may. This one is the same
+        slice of coupon valued the way the rest of the leg is valued — paid at
+        the payment date, and only on survival to it, plus the share of it that
+        a default inside the remaining stub would bring forward.
+
+        The two are the same quantity by construction and differ by discounting
+        and by default risk. The difference is small at ordinary levels, which
+        is why nobody writes it down, and it is the reason the principal in
+        :class:`UpfrontSettlement` is not a present value.
+        """
+        period = self.current_period(curve.reference)
+        if period is None or period.payment <= curve.reference:
+            return 0.0
+        accrual = year_fraction(period.adjusted_start, period.adjusted_end, self.basis)
+        if accrual <= _TOLERANCE:
+            return 0.0
+        elapsed = year_fraction(period.adjusted_start, curve.reference, self.basis)
+        share = elapsed / accrual
+        pay = curve.time_to(period.payment)
+        worth = accrual * discount.discount_at(pay) * curve.survival_at(pay)
+        if self.accrual_on_default:
+            start = _signed_time(curve, period.adjusted_start)
+            end = _signed_time(curve, period.adjusted_end)
+            span = end - start
+            if span > _TOLERANCE:
+                weighted = _survival_integral(
+                    curve, discount, max(start, 0.0), end, accrual_from=start
+                )
+                worth += weighted * accrual / span
+        return self.notional * self.coupon * share * worth
 
     def premium_leg(self, curve: SurvivalCurve, discount: DiscountCurve) -> float:
         """Present value of the premiums, per unit of notional."""
@@ -446,6 +613,18 @@ class CreditDefaultSwap:
                 "survival to the first premium date is negligible"
             )
         return self.protection_leg(curve, discount) / annuity
+
+    def upfront(self, curve: SurvivalCurve, discount: DiscountCurve) -> UpfrontSettlement:
+        """The settlement amount, split into principal and accrued premium.
+
+        The buyer pays both halves, so the principal is the whole amount less
+        the accrued rather than a separate valuation. See
+        :class:`UpfrontSettlement` for why the two halves are measured
+        differently and :meth:`accrued_value` for the size of that.
+        """
+        cash = self.value(curve, discount)
+        owed = self.accrued(curve.reference)
+        return UpfrontSettlement(principal=cash - owed, accrued=owed, cash=cash)
 
 
 def triangle_spread(hazard: float, recovery: float) -> float:
