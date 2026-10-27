@@ -5,7 +5,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tenor"
+name = "tenor-curves"
 version = "0.1.0"
 description = "A fixed-income curve toolkit: day counts, discount curves, bond analytics, key rate risk and option-adjusted spread."
 readme = "README.md"
@@ -51,6 +51,9 @@ Issues = "https://github.com/DaniyalMlk/tenor/issues"
 
 [project.scripts]
 tenor = "tenor.cli:main"
+# So that `uvx tenor-curves` resolves: a distribution whose only entry point
+# is named something else leaves the obvious invocation failing.
+tenor-curves = "tenor.cli:main"
 
 [project.optional-dependencies]
 # Nothing is needed to run this. Everything below is for checking the code.
