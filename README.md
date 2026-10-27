@@ -60,8 +60,14 @@ Behind them: 1989 tests, run on Python 3.10 through 3.13.
 ## Installing
 
 ```bash
-pip install tenor
+pip install tenor-curves
 ```
+
+**The distribution is `tenor-curves` and the import is `tenor`.** The two
+differ because `tenor` on the index is an unrelated project that claimed the
+name and published nothing; the module, the command and every identifier are
+unchanged, and `tenor-curves` also works as a command so that `uvx
+tenor-curves` resolves.
 
 > **Not on the package index yet.** The `pip install` line above is what it
 > will be; until the first release lands, install from source:

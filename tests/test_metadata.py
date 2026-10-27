@@ -6,13 +6,21 @@ drift apart, a licence claimed in metadata but absent from the tree, a typing
 marker that exists in the source and never reaches the wheel. Each of these is
 invisible until someone tries to depend on the package, which is the worst
 moment to find out.
+
+This project has one wrinkle most of its siblings do not. `tenor` on the
+package index is an unrelated project that claimed the name and shipped
+nothing, so the distribution name is `tenor-curves` while the import name stays
+`tenor`. That split is exactly the kind of thing that is right in one file and
+forgotten in another, so it is asserted in both directions here: the metadata
+is looked up under the distribution name, and the entry points are checked to
+include the distribution's own.
 """
 
 from __future__ import annotations
 
 import re
 import sys
-from importlib.metadata import metadata, version
+from importlib.metadata import entry_points, metadata, version
 from pathlib import Path
 
 import pytest
@@ -20,6 +28,11 @@ import pytest
 import tenor
 
 ROOT = Path(__file__).resolve().parent.parent
+
+#: What the index serves it as, which is not what you import. `tenor` on the
+#: package index is an unrelated project that claimed the name and shipped
+#: nothing, so the distribution is `tenor-curves` and the import stays `tenor`.
+DISTRIBUTION = "tenor-curves"
 
 
 def test_version_is_exported() -> None:
@@ -34,7 +47,7 @@ def test_exported_version_matches_the_installed_distribution() -> None:
     other is the ordinary mistake, and it produces a release whose reported
     version is a lie.
     """
-    assert tenor.__version__ == version("tenor")
+    assert tenor.__version__ == version(DISTRIBUTION)
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is 3.11+")
@@ -72,7 +85,7 @@ def test_licence_reaches_the_built_distribution() -> None:
     metadata goes on claiming MIT while the artefact ships no terms at all. That
     is the state every wheel this project built before now was in.
     """
-    fields = metadata("tenor")
+    fields = metadata(DISTRIBUTION)
     assert fields["License-Expression"] == "MIT"
     assert "LICENSE" in fields.get_all("License-File", [])
 
@@ -89,7 +102,34 @@ def test_the_typing_marker_ships() -> None:
     installed the package gets none of them.
     """
     assert (Path(tenor.__file__).parent / "py.typed").is_file()
-    assert "Typing :: Typed" in metadata("tenor").get_all("Classifier", [])
+    assert "Typing :: Typed" in metadata(DISTRIBUTION).get_all("Classifier", [])
+
+
+def test_both_console_scripts_are_installed() -> None:
+    """`tenor` and `tenor-curves` both resolve to the same entry point.
+
+    The second exists because `uvx tenor-curves` is what somebody who read the
+    install line will type, and a distribution whose only script is named
+    something else leaves that failing with nothing to go on.
+    """
+    scripts = {
+        point.name: point.value
+        for point in entry_points(group="console_scripts")
+        if point.value.startswith("tenor.cli")
+    }
+    assert scripts.get("tenor") == "tenor.cli:main"
+    assert scripts.get(DISTRIBUTION) == "tenor.cli:main"
+
+
+def test_the_import_name_is_not_the_distribution_name() -> None:
+    """The split is deliberate, and asserting it keeps it deliberate.
+
+    Without this a later tidy-up could quietly set the two to the same string,
+    which would either take a name that is not ours or rename the module out
+    from under every import.
+    """
+    assert DISTRIBUTION != tenor.__name__
+    assert metadata(DISTRIBUTION)["Name"] == DISTRIBUTION
 
 
 def test_the_entry_point_reports_the_version() -> None:
