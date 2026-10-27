@@ -128,7 +128,7 @@ def test_the_import_name_is_not_the_distribution_name() -> None:
     which would either take a name that is not ours or rename the module out
     from under every import.
     """
-    assert DISTRIBUTION != tenor.__name__
+    assert tenor.__name__ != DISTRIBUTION
     assert metadata(DISTRIBUTION)["Name"] == DISTRIBUTION
 
 
