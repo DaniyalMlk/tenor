@@ -154,6 +154,21 @@ class TestTheWideningBudget:
         with pytest.raises(NoRoot):
             bracket_root(self.far(1.0e6), 0.0, 1.0, attempts=14)
 
+    def test_the_budget_walks_downward_too(self) -> None:
+        # Every other case here has its root above the bracket, so only the
+        # upper end ever moves and the lower branch of the widening is never
+        # taken. A break sweep found that: changing the low-side step left the
+        # whole class green. The two branches are mirror images, so the budgets
+        # have to match.
+        down = bracket_root(lambda x: x + 1.0e6, 0.0, 1.0, attempts=15)
+        assert down[0] < -1.0e6 < down[1]
+        with pytest.raises(NoRoot, match="after 14 widenings"):
+            bracket_root(lambda x: x + 1.0e6, 0.0, 1.0, attempts=14)
+        # And the end that moved is the low one, with the span multiplied by
+        # one plus the growth per attempt, exactly as upward.
+        assert down[1] == pytest.approx(1.0, abs=1e-12)
+        assert down[1] - down[0] == pytest.approx((1.0 + 1.6) ** 15, rel=1e-9)
+
     def test_the_two_options_trade_against_each_other(self) -> None:
         # Which is the reason both are options: a slower growth needs more
         # attempts for the same reach, and the exchange rate is measurable.
