@@ -64,9 +64,21 @@ def bracket_root(
 
     Expands whichever end currently has the smaller absolute value, which walks
     towards the root rather than symmetrically away from the starting guess.
-    Sixty attempts at a growth of 1.6 covers about ten orders of magnitude,
-    which is far more than any rate or spread needs and cheap enough not to
-    tune.
+
+    One end moves by ``growth`` times the current span, so the span itself is
+    multiplied by ``1 + growth`` every attempt — which is the step the reach
+    quoted here used to get wrong. Sixty attempts at a growth of 1.6 widen a
+    unit interval by ``2.6 ** 60``, about **twenty-five** orders of magnitude,
+    not the ten this said before: measured against roots placed on the powers of
+    ten, the default budget finds one at ``1e24`` and not one at ``1e25``. Far
+    more than any rate or spread needs, and cheap enough not to tune.
+
+    The bracket is tested for a sign change before any widening, not only inside
+    the loop. With the test inside, ``attempts=0`` refused an interval that
+    already contained the root while printing the two opposite-signed values it
+    had just computed — an error message contradicted by its own evidence. The
+    budget is a number of widenings; checking whether any are needed is not one
+    of them.
     """
     if high <= low:
         raise NoRoot(f"a bracket runs from low to high, got [{low!r}, {high!r}]")
@@ -76,9 +88,9 @@ def bracket_root(
         return low, low
     if high_value == 0.0:
         return high, high
+    if low_value * high_value < 0.0:
+        return low, high
     for _ in range(attempts):
-        if low_value * high_value < 0.0:
-            return low, high
         span = high - low
         if abs(low_value) < abs(high_value):
             low -= growth * span
@@ -86,6 +98,8 @@ def bracket_root(
         else:
             high += growth * span
             high_value = function(high)
+        if low_value * high_value < 0.0:
+            return low, high
     raise NoRoot(
         f"no sign change found after {attempts} widenings, ending at "
         f"[{low!r}, {high!r}] with values [{low_value!r}, {high_value!r}]. The "
