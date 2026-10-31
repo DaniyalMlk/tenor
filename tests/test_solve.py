@@ -12,6 +12,7 @@ returned.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 
@@ -114,3 +115,93 @@ def test_the_record_reports_where_it_started() -> None:
     assert found.bracket == (0.0, 1.0)
     assert isinstance(found, Root)
     assert "converged" in str(found)
+
+
+class TestTheWideningBudget:
+    """``attempts`` and ``growth``: the two numbers the widening is made of.
+
+    Neither had been chosen from outside the module, so neither the docstring's
+    claim about reach nor the behaviour at the edge of the budget had ever been
+    looked at. Both turned out to be wrong.
+    """
+
+    @staticmethod
+    def far(target: float) -> Callable[[float], float]:
+        return lambda x: x - target
+
+    def test_the_span_is_multiplied_by_one_plus_growth_each_attempt(self) -> None:
+        # The step the old docstring got wrong: one end moves by growth times
+        # the span, so the span is multiplied by 1 + growth, not by growth.
+        assert pytest.approx(7.914e24, rel=1e-3) == (1.0 + 1.6) ** 60
+        assert math.log10((1.0 + 1.6) ** 60) == pytest.approx(24.9, abs=0.1)
+
+    def test_the_default_budget_reaches_what_the_docstring_now_claims(self) -> None:
+        # Measured against roots on the powers of ten rather than argued from
+        # the arithmetic above, so the two are independent readings.
+        low, high = bracket_root(self.far(1.0e24), 0.0, 1.0)
+        assert low < 1.0e24 < high
+        with pytest.raises(NoRoot, match="no sign change found after 60 widenings"):
+            bracket_root(self.far(1.0e25), 0.0, 1.0)
+
+    def test_a_small_budget_runs_out_and_a_sufficient_one_does_not(self) -> None:
+        # The option has to change the outcome, not merely be accepted.
+        with pytest.raises(NoRoot, match="no sign change found after 4 widenings"):
+            bracket_root(self.far(1.0e6), 0.0, 1.0, attempts=4)
+        low, high = bracket_root(self.far(1.0e6), 0.0, 1.0, attempts=15)
+        assert low < 1.0e6 < high
+        # Fifteen is the smallest budget that gets there at this growth, so the
+        # failure above is the budget and not the function.
+        with pytest.raises(NoRoot):
+            bracket_root(self.far(1.0e6), 0.0, 1.0, attempts=14)
+
+    def test_the_budget_walks_downward_too(self) -> None:
+        # Every other case here has its root above the bracket, so only the
+        # upper end ever moves and the lower branch of the widening is never
+        # taken. A break sweep found that: changing the low-side step left the
+        # whole class green. The two branches are mirror images, so the budgets
+        # have to match.
+        down = bracket_root(lambda x: x + 1.0e6, 0.0, 1.0, attempts=15)
+        assert down[0] < -1.0e6 < down[1]
+        with pytest.raises(NoRoot, match="after 14 widenings"):
+            bracket_root(lambda x: x + 1.0e6, 0.0, 1.0, attempts=14)
+        # And the end that moved is the low one, with the span multiplied by
+        # one plus the growth per attempt, exactly as upward.
+        assert down[1] == pytest.approx(1.0, abs=1e-12)
+        assert down[1] - down[0] == pytest.approx((1.0 + 1.6) ** 15, rel=1e-9)
+
+    def test_the_two_options_trade_against_each_other(self) -> None:
+        # Which is the reason both are options: a slower growth needs more
+        # attempts for the same reach, and the exchange rate is measurable.
+        smallest = {}
+        for growth in (1.05, 1.6, 3.0):
+            for attempts in range(0, 60):
+                try:
+                    bracket_root(self.far(1.0e6), 0.0, 1.0, growth=growth, attempts=attempts)
+                except NoRoot:
+                    continue
+                smallest[growth] = attempts
+                break
+        assert smallest == {1.05: 20, 1.6: 15, 3.0: 10}
+
+    def test_a_bracket_that_already_changes_sign_needs_no_widenings(self) -> None:
+        # The sign-change test used to live inside the widening loop, so a
+        # budget of zero refused an interval that already contained the root --
+        # and said `no sign change found` while printing values of -0.5 and
+        # +0.5, which plainly change sign. A budget is a number of widenings;
+        # checking whether any are needed is not one of them.
+        assert bracket_root(self.far(0.5), 0.0, 1.0, attempts=0) == (0.0, 1.0)
+        # And zero still refuses a bracket that genuinely needs widening.
+        with pytest.raises(NoRoot, match="after 0 widenings"):
+            bracket_root(self.far(1.0e6), 0.0, 1.0, attempts=0)
+
+    def test_hoisting_the_check_did_not_cost_an_attempt(self) -> None:
+        # The loop now tests after widening rather than before, so the budget
+        # still buys exactly `attempts` widenings and no more. If the check had
+        # simply been hoisted, every budget would have been one short.
+        # A target of 2.0 lies strictly inside the once-widened [0, 2.6], so
+        # one attempt finds it. (2.6 itself would land exactly on the new end,
+        # where the product of the two values is zero rather than negative --
+        # the one place this search does not call a touch a crossing.)
+        assert bracket_root(self.far(2.0), 0.0, 1.0, attempts=1) == (0.0, 2.6)
+        with pytest.raises(NoRoot, match="after 1 widenings"):
+            bracket_root(self.far(100.0), 0.0, 1.0, attempts=1)

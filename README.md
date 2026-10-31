@@ -55,7 +55,7 @@ worked example enforces.
 python examples/worked.py     # all nine sections, non-zero if a figure moves
 ```
 
-Behind them: 1989 tests, run on Python 3.10 through 3.13.
+Behind them: 2015 tests, run on Python 3.10 through 3.13.
 
 ## Installing
 
@@ -2362,7 +2362,7 @@ reassuring and wrong.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 1535 tests
+pytest          # 2015 tests
 mypy --strict
 ruff check .
 ```

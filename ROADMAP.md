@@ -1683,3 +1683,32 @@ that told a user who had mistyped one of `--expiry`, `--effective` and
 - [x] Four ways of breaking it, each confirmed to fail the suite: a site naming
       an option that does not exist, a site bypassing the helper, a message
       that stops naming the option, and a helper that swallows a bad date
+
+## Phase 30 — Options nobody has chosen
+
+- [x] A gate over the source, parsed rather than grepped: every defaulted
+      parameter of every public function, and every defaulted field of a type
+      the package does not itself return, has to be supplied somewhere outside
+      the file that declares it
+- [x] The result rule made transitive, because a type handed back inside
+      something handed back is handed back too — a stripped curve's caplet
+      buckets are never a return annotation of their own
+- [x] Supply counted positionally as well as by keyword, since in Python those
+      are the same choice, and no exemption mechanism
+- [x] The forward difference keeps its window centred on the time asked about
+      instead of clamping its two ends independently, which moved the midpoint
+      by up to half the bump and turned a second-order error into a first-order
+      one — twenty-five basis points on the bundled curve
+- [x] A non-positive bump refused, rather than reported as a time that is not
+      on the curve
+- [x] The bracket tested for a sign change before a widening is spent on it, so
+      a zero budget stops refusing an interval that already contains the root
+      while printing the two opposite-signed values that contradict it
+- [x] The widening's reach measured against roots on the powers of ten: the
+      span is multiplied by one plus the growth each attempt, so sixty attempts
+      at 1.6 cover twenty-five orders of magnitude and not the ten claimed
+- [x] The flat leg a basis quote falls back to chosen, and checked against the
+      tenor written on the line beating it
+- [x] The front page's suite size checked wherever it is stated, not only where
+      it is stated first: the page says it twice and the second figure had
+      drifted a quarter low behind a guard that stopped at the first match

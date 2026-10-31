@@ -1260,6 +1260,49 @@ def test_the_forecast_file_parses_all_three_kinds() -> None:
     assert spreads[0].flat_index.tenor is Frequency.SEMI_ANNUAL
 
 
+def test_the_flat_leg_a_basis_quote_falls_back_to_is_an_option() -> None:
+    """A basis quote names the spread leg; the flat leg is the fallback.
+
+    The command line exposes it as `--flat-frequency` and nothing called the
+    parser with it directly, so the fallback had only ever been
+    semi-annual. What makes it worth choosing rather than merely accepting is
+    that the two legs cannot be the same tenor -- a quote whose legs agree says
+    nothing about either curve -- so the fallback is load-bearing on exactly
+    the file that omits the fourth field.
+    """
+    index = ForecastIndex(tenor=Frequency.QUARTERLY, basis=Basis.ACT_360)
+    line = "basis 2031-01-15 0.0008"
+
+    _, default = parse_forecast_quotes(line, date(2026, 1, 15), index)
+    assert default[0].flat_index.tenor is Frequency.SEMI_ANNUAL
+
+    _, annual = parse_forecast_quotes(
+        line, date(2026, 1, 15), index, flat_frequency=Frequency.ANNUAL
+    )
+    assert annual[0].flat_index.tenor is Frequency.ANNUAL
+    # The spread leg is untouched by the choice, which is the half that would
+    # have been easy to get wrong.
+    assert annual[0].spread_index.tenor is Frequency.QUARTERLY
+    assert annual[0].spread == pytest.approx(0.0008)
+
+    # A fourth field on the line beats the fallback, so the fallback really is
+    # a fallback rather than an override.
+    _, written = parse_forecast_quotes(
+        "basis 2031-01-15 0.0008 ANNUAL",
+        date(2026, 1, 15),
+        index,
+        flat_frequency=Frequency.SEMI_ANNUAL,
+    )
+    assert written[0].flat_index.tenor is Frequency.ANNUAL
+
+    # And a fallback equal to the index's own tenor is refused, because then the
+    # quote says nothing about either curve.
+    with pytest.raises(BadInput, match="nothing about either"):
+        parse_forecast_quotes(
+            line, date(2026, 1, 15), index, flat_frequency=Frequency.QUARTERLY
+        )
+
+
 def test_the_forecast_file_refuses_mixing_swaps_with_basis_spreads() -> None:
     with pytest.raises(BadInput, match="two curves"):
         parse_forecast_quotes(
