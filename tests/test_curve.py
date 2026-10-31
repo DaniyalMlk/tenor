@@ -621,3 +621,95 @@ def test_the_curve_reports_its_own_interpolation_and_basis() -> None:
     swapped = curve.with_interpolation(Interpolation.LOG_LINEAR_DISCOUNT)
     assert swapped.pillars == curve.pillars
     assert swapped.interpolation is Interpolation.LOG_LINEAR_DISCOUNT
+
+
+# -- the difference window, and the bump nobody had chosen --------------------
+
+
+class TestTheDifferenceWindow:
+    """``instantaneous_forward`` differences over a window, and where it sits.
+
+    The bump had never been chosen from outside the module, which is why the
+    clamping went unexamined. Clamping the two ends independently moves the
+    midpoint of the window away from the point being asked about, so the answer
+    becomes an average forward over somewhere else -- a first-order error, where
+    a central difference is chosen precisely to avoid one.
+
+    Log-linear is the interpolation to see it on, because its forward is
+    piecewise constant: the true answer inside an interval is one number with no
+    curvature, so a symmetric window of *any* width that fits inside the
+    interval is exact, and every disagreement is the window rather than the
+    scheme. That also makes the error budget easy to state. A wide window is
+    exact to 1e-14 here; the default bump of a millionth of a year is the least
+    accurate of the lot, at 1.2e-11 absolute, because a log difference over two
+    millionths cancels. Tolerances below are that cancellation and nothing else
+    -- the defect this class is about was five parts in a thousand.
+    """
+
+    FLAT_BUMP = 0.2
+
+    @property
+    def curve(self) -> DiscountCurve:
+        return build(Interpolation.LOG_LINEAR_DISCOUNT)
+
+    def test_a_window_inside_an_interval_is_exact_whatever_its_width(self) -> None:
+        curve = self.curve
+        middle = 0.5 * (curve.times[1] + curve.times[2])
+        exact = 0.0175
+        assert curve.instantaneous_forward(middle, bump=0.5) == pytest.approx(exact, abs=1e-13)
+        assert curve.instantaneous_forward(middle) == pytest.approx(exact, abs=2e-11)
+
+    def test_a_window_that_has_to_shrink_stays_centred(self) -> None:
+        # Half way into the first interval with a bump a whole year wide. The
+        # window used to clamp to [0, 1.5] and pick up the second interval's
+        # forward; now it shrinks to [0, 1] and returns the first interval's,
+        # which is the quantity asked for.
+        curve = self.curve
+        inside = 0.5 * curve.times[1]
+        truth = curve.instantaneous_forward(inside, bump=self.FLAT_BUMP)
+        assert truth == pytest.approx(0.01, abs=1e-13)
+        assert curve.instantaneous_forward(inside, bump=1.0) == pytest.approx(truth, abs=1e-13)
+        # The old arithmetic, reconstructed here rather than described, so the
+        # size of the error is read and not asserted.
+        low, high = max(inside - 1.0, 0.0), min(inside + 1.0, curve.times[-1])
+        stale = -(
+            math.log(curve.discount_at(high)) - math.log(curve.discount_at(low))
+        ) / (high - low)
+        assert (low, high) == (0.0, 1.5)
+        assert stale == pytest.approx(0.0125, abs=1e-12)
+        assert stale - truth == pytest.approx(0.0025, abs=1e-12)
+
+    @pytest.mark.parametrize("bump", [1e-6, 1e-3, 0.05, 0.2, 0.9])
+    def test_the_answer_inside_the_first_interval_does_not_depend_on_the_bump(
+        self, bump: float
+    ) -> None:
+        curve = self.curve
+        inside = 0.5 * curve.times[1]
+        assert curve.instantaneous_forward(inside, bump=bump) == pytest.approx(0.01, abs=2e-11)
+
+    def test_the_two_endpoints_are_one_sided_and_read_the_end_intervals(self) -> None:
+        # At zero and at the horizon a window cannot be centred, so it is
+        # one-sided there on purpose and reads the end interval's forward.
+        curve = self.curve
+        assert curve.instantaneous_forward(0.0, bump=0.25) == pytest.approx(0.01, abs=1e-13)
+        inside_last = 0.5 * (curve.times[-2] + curve.times[-1])
+        last = curve.instantaneous_forward(inside_last, bump=self.FLAT_BUMP)
+        assert curve.instantaneous_forward(curve.times[-1], bump=0.25) == pytest.approx(
+            last, abs=1e-13
+        )
+
+    @pytest.mark.parametrize("bump", [0.0, -1e-6, -1.0])
+    def test_a_bump_that_is_not_positive_is_refused(self, bump: float) -> None:
+        # It used to report `no interval around 2.0 lies on the curve`, which
+        # names the wrong argument: the time was fine.
+        with pytest.raises(ValueError, match="bump must be positive"):
+            self.curve.instantaneous_forward(2.0, bump=bump)
+
+    def test_monotone_convex_ignores_the_bump_because_it_differences_nothing(self) -> None:
+        monotone = build(Interpolation.MONOTONE_CONVEX)
+        analytic = monotone.instantaneous_forward(1.5)
+        for bump in (1e-9, 0.5, 2.0):
+            assert monotone.instantaneous_forward(1.5, bump=bump) == analytic
+        # Still validated, so the two branches refuse the same thing.
+        with pytest.raises(ValueError, match="bump must be positive"):
+            monotone.instantaneous_forward(1.5, bump=0.0)

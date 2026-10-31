@@ -380,12 +380,41 @@ class DiscountCurve:
         Monotone convex is the exception: its forward rate is the quantity it
         interpolates, so it is returned analytically rather than differenced.
         The two agree to the accuracy of the difference away from the pillars,
-        which the tests check rather than assert in a comment.
+        which the tests check rather than assert in a comment. It also ignores
+        ``bump`` entirely, since there is nothing to difference.
+
+        **The window stays centred on ``time``, including where it has to
+        shrink.** Clamping the two ends independently — ``time - bump`` at zero
+        and ``time + bump`` at the horizon — moves the midpoint of the window
+        away from the point being asked about, by as much as half the bump, and
+        then the answer is an average forward over somewhere else. That is a
+        first-order error rather than the second-order one a central difference
+        is chosen for, and it is invisible at the default bump because half a
+        millionth of a year is nothing. On a curve whose first pillar is at one
+        year with a 2% forward there, asking at ``t = 0.5`` with ``bump = 1``
+        returned 2.667%: the window had become ``[0, 1.5]`` and had picked up the
+        next interval's 4%. Shrinking the half-width to
+        ``min(bump, time, horizon - time)`` keeps the midpoint where it belongs
+        and returns 2% exactly. At the two endpoints themselves the window
+        cannot be centred at all, so it is deliberately one-sided there.
+
+        Raises:
+            ValueError: If ``bump`` is not positive.
+            OffCurve: If no interval around ``time`` lies on the curve.
         """
+        if not bump > 0.0:
+            raise ValueError(f"the difference bump must be positive, got {bump!r}")
         if self.interpolation is Interpolation.MONOTONE_CONVEX:
             return self.monotone.forward_at(min(max(time, 0.0), self.times[-1]))
-        low = max(time - bump, 0.0)
-        high = min(time + bump, self.times[-1])
+        horizon = self.times[-1]
+        half = min(bump, max(time, 0.0), max(horizon - time, 0.0))
+        if half > 0.0:
+            low, high = time - half, time + half
+        else:
+            # At or beyond an end of the curve: one-sided, which is the most a
+            # difference can be there.
+            low = max(time - bump, 0.0)
+            high = min(time + bump, horizon)
         if high <= low:
             raise OffCurve(f"no interval around {time!r} lies on the curve")
         return -(math.log(self.discount_at(high)) - math.log(self.discount_at(low))) / (
