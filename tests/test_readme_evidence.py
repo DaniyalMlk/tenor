@@ -208,7 +208,7 @@ def test_the_suite_size_on_the_front_page_is_not_wildly_stale() -> None:
     This used to take the *first* count on the page and check that one. The
     README states the size twice -- once in the evidence section and once in
     the development instructions -- so the second figure was never looked at.
-    It had drifted to 1,535 against a real 2,014: 23.8% low, which is to say
+    It had drifted to 1,535 against a real 2,015: 23.8% low, which is to say
     *just* inside this band and one commit from falling out of it, with nothing
     reading it either way. A guard that stops at the first match on a long page
     is a guard over the first match, so every figure the page states is checked
