@@ -12,6 +12,7 @@ returned.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 
@@ -125,13 +126,13 @@ class TestTheWideningBudget:
     """
 
     @staticmethod
-    def far(target: float):
+    def far(target: float) -> Callable[[float], float]:
         return lambda x: x - target
 
     def test_the_span_is_multiplied_by_one_plus_growth_each_attempt(self) -> None:
         # The step the old docstring got wrong: one end moves by growth times
         # the span, so the span is multiplied by 1 + growth, not by growth.
-        assert (1.0 + 1.6) ** 60 == pytest.approx(7.914e24, rel=1e-3)
+        assert pytest.approx(7.914e24, rel=1e-3) == (1.0 + 1.6) ** 60
         assert math.log10((1.0 + 1.6) ** 60) == pytest.approx(24.9, abs=0.1)
 
     def test_the_default_budget_reaches_what_the_docstring_now_claims(self) -> None:
