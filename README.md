@@ -50,6 +50,8 @@ moves:
 | Protection before the valuation date, priced from inside the schedule | zero, to the last bit, against the same contract struck today |
 | A settlement amount against its own split into principal and accrued | zero |
 | A defaultable bond's forward price, against the riskless one at no hazard | inside 1e-13, at the reference date and seven years out |
+| A one-date Bermudan on the tree, against the same option in closed form | inside 2.2e-3 relative, worst of four meshes |
+| The switch value as a share of the best co-terminal European | 29.3 to 29.4% across 24 to 192 steps a year |
 
 The two spread rows are the ones worth looking at twice. A spread measured
 against the curve a bond was priced on has to be *zero*, and "a plausibly small
@@ -64,7 +66,7 @@ true where it was measured. The bound is the claim, and it is the bound the
 worked example enforces.
 
 ```bash
-python examples/worked.py     # all nine sections, non-zero if a figure moves
+python examples/worked.py     # all ten sections, non-zero if a figure moves
 ```
 
 Behind them: 2015 tests, run on Python 3.10 through 3.13.
@@ -1735,7 +1737,8 @@ value = bermudan_swaption(curve, HullWhite(a=0.05, sigma=0.01), option, referenc
 
 value.price           # 0.041895
 value.best_european   # 0.032385 -- the best single date, priced in closed form
-value.switch_value    # 0.009510 -- 29.4% of it, which is what the dates buy
+value.switch_value    # 0.009510 -- 29.4% of the best European, not of the price
+value.crossings       # 0 -- one boundary describes every date's decision
 ```
 
 ### The switch value is the number, not the price
@@ -1745,6 +1748,18 @@ exercising only on that one date is a strategy available to it. So the price on
 its own does not say whether a desk is paying for optionality or for a European
 with extra steps; the excess over that best single date does. Here the seven
 annual dates are worth **29.4%** on top of the best of them.
+
+Which is 29.4% of the best European and not of the price — the switch value is
+22.7% of the price, and the two readings are 6.7 percentage points apart. The
+denominator is the quantity the excess is excess *over*, and the
+inline comment above says so rather than leaving "of it" to be guessed at.
+
+That figure is also a lattice figure, which the section below says is a thing
+to distrust from a single mesh. At 24, 48, 96 and 192 steps a year the share
+comes to 29.395%, 29.364%, 29.310% and 29.313%, so the published number is a
+**29.3 to 29.4%** band and the 29.4% is the default mesh's corner of it. Both
+ends of that band are what `examples/worked.py` enforces; neither is a
+tolerance drawn around the default's answer.
 
 ### Rounding to the nearest node removes the cap on the tree
 
