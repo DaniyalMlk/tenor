@@ -133,7 +133,7 @@ see. It exits non-zero if any of them moves.
 - [ ] A first release on the index, which waits on the publisher being registered
       there for this project
 
-## Phase 8 — Holding-period return
+## Phase 9 — Holding-period return
 
 The library could price a bond and measure its risk, and could not answer the
 question a position is held for: if nothing happens, what does this earn?
@@ -169,7 +169,7 @@ Reporting only income-minus-financing would have been the conventional choice
 and it ranks positions backwards: a 9% bond shows +4.83 against a zero-coupon
 bond's -2.00, and the zero-coupon bond earns 27bp more over the year.
 
-## Phase 9 — Floating rate notes
+## Phase 10 — Floating rate notes
 
 The library priced fixed-coupon bullets, solved yields and three kinds of spread,
 and measured key rate and shape risk. It could not price the one instrument whose
@@ -234,7 +234,7 @@ settlement date past maturity left no flows, so the sum over an empty sequence
 priced a matured note at 0.0 and every risk number built on it would have divided
 by it.
 
-## Phase 10 — Index-linked bonds
+## Phase 11 — Index-linked bonds
 
 The library priced fixed-coupon bullets, floating rate notes and callables, and
 had nothing for the third major cash government instrument. Almost nothing about
@@ -289,7 +289,7 @@ projecting backwards sat after the year fraction, which refuses a backwards
 interval itself with a message about day counts; it now runs first and names the
 anchor.
 
-## Phase 11 — Default risk
+## Phase 12 — Default risk
 
 - [x] A survival curve as a piecewise-constant forward hazard rate, carrying the
       recovery assumption it was stripped under
@@ -305,7 +305,7 @@ anchor.
       measured rather than repeated
 - [x] A command-line entry point reading quoted spreads in basis points
 
-## Phase 12 — Deliverable bond futures
+## Phase 13 — Deliverable bond futures
 
 - [x] Conversion factors on the exchange convention, with the remaining life
       rounded down to a whole quarter, checked against pricing the rounded bond
@@ -356,7 +356,7 @@ and is refused. The refusal is the proof, and the test sweeps every maturity for
 a month either side of the delivery month at a daily step looking for the
 counterexample.
 
-## Phase 13 — Discounting and forecasting, separated
+## Phase 14 — Discounting and forecasting, separated
 
 - [x] A forecast index — tenor, day count, calendar, rolling rule and payment
       lag — and the simply compounded forward it implies, read off a projection
@@ -435,7 +435,7 @@ basis file were being dropped when the basis quotes were adapted to the
 one-unknown protocol — which no repricing check can see, because the curve
 reprices whatever it was actually handed.
 
-## Phase 14 — Swaptions, caps and floors
+## Phase 15 — Swaptions, caps and floors
 
 - [x] European swaptions on the annuity measure, in which the forward swap rate
       is a martingale and Black's formula applies with no approximation beyond
@@ -491,7 +491,7 @@ of 0.6 times the forward both prices are their intrinsics and the ratio is
 conventions, by precisely the amount the conventions differ — which is the most
 useful thing an inequality can do.
 
-## Phase 15 — A short rate model, so one parameter set prices everything
+## Phase 16 — A short rate model, so one parameter set prices everything
 
 - [x] Hull-White's one factor, with the drift fitted to the initial curve
       through `A(t,T)` rather than by solving for `theta`
@@ -507,7 +507,7 @@ useful thing an inequality can do.
       between them measured rather than hidden inside a two-parameter fit
 - [x] A command-line entry point reporting the identities before the price
 
-Phases 13 and 14 put a swaption on the annuity measure, which takes a
+Phases 14 and 15 put a swaption on the annuity measure, which takes a
 volatility as an input, and phase 6 put a callable bond on a lattice, which has
 no closed form and says nothing about a swaption. Neither is a model in the
 sense of one specification pricing both. This is the smallest thing that is.
@@ -581,7 +581,7 @@ One defect in the tests: a payer swaption was asserted to rise with its strike.
 Paying a higher fixed rate is worse, so it falls, and the first run of the
 suite said so.
 
-## Phase 16 — A second factor, because one cannot decorrelate two rates
+## Phase 17 — A second factor, because one cannot decorrelate two rates
 
 - [x] The five parameters, each with the constraint it has, and equal speeds
       allowed rather than refused
@@ -597,7 +597,7 @@ suite said so.
 - [x] A command-line entry point that prices a cap and then shows what the cap
       cannot identify
 
-Phase 15 is a real model and has one limitation calibration cannot touch. With
+Phase 16 is a real model and has one limitation calibration cannot touch. With
 a single factor every bond price is affine in the same scalar, so
 `log P(t, T1)` and `log P(t, T2)` are affine in one Gaussian and their
 correlation is **exactly one** for every pair of maturities at every parameter
@@ -682,7 +682,7 @@ of the convexity term in `phi`, not a defect: the state map is
 `r(t) = phi(t) + x(t) + y(t)`, and the mapping is now the point of the test
 rather than an incidental detail of it.
 
-## Phase 17 — A rate paid outside the measure it is a martingale under
+## Phase 18 — A rate paid outside the measure it is a martingale under
 
 - [x] The annuity mapping function as a function of the rate, with its first
       two derivatives, under the flat-curve model
@@ -718,7 +718,7 @@ be — that contract is a forward rate paid in arrears, which needs no adjustmen
 and never did. The replication is then the point mass at the kink and nothing
 else, and it matches `tenor.options` to **5e-16** across four strikes and both
 payoffs. It is the only check here that would catch the point mass carrying the
-wrong sign, which is exactly the error Phase 16 made with a call and a put.
+wrong sign, which is exactly the error Phase 17 made with a call and a put.
 
 The quadrature is checked against arithmetic from outside the package rather
 than against itself. Against that flat mapping, replicating `S**2` has to return
@@ -777,7 +777,7 @@ an option's kink at all, so a strike away from the forward was refused where its
 intrinsic value was the answer. A known rate makes the payoff a fixed cashflow
 on a known date; it is now answered as one, with no model and no quadrature.
 
-## Phase 18 — Several exercise dates, and no formula for any of them
+## Phase 19 — Several exercise dates, and no formula for any of them
 
 - [x] A trinomial tree on the Hull-White state variable, with the exact
       conditional moments of the step rather than their Euler approximations
@@ -897,7 +897,7 @@ maxima over different stopping rules, and a difference of maxima is not the
 maximum of a difference: measured at 0.00212 against a swap worth 0.00136, so
 treating it as a check would report a 56% pricing error on correct prices.
 
-## Phase 19 — Reading a quote convention back into a model input
+## Phase 20 — Reading a quote convention back into a model input
 
 - [x] A cap quote type carrying a maturity and a flat volatility, with the
       strike on the call rather than on the quote
@@ -991,7 +991,7 @@ with them — so an interval of volatilities all produce the intrinsic value. At
 the money the premium is linear in the volatility with a slope near
 `0.4 F sqrt(T)`, and zero is pinned to 2.8e-16.
 
-## Phase 20 — Two currencies, and the quantity that is left over
+## Phase 21 — Two currencies, and the quantity that is left over
 
 - [x] Covered interest parity in both directions, with the round trip returning
       the same float rather than a close one
@@ -1045,7 +1045,7 @@ zero basis rising from 10 to 40 basis points the forward basis reaches 70, and
 the spread is 39.02 — against 25 for a time average of the zero basis and 11.5
 for its short end.
 
-## Phase 21 — A rate observed every day, and where the window sits
+## Phase 22 — A rate observed every day, and where the window sits
 
 A floating leg here projects a term index: one fixing at the start of a period,
 over the period it pays for. Most of the market now pays an overnight index
@@ -1147,7 +1147,7 @@ maturity, so an effective date that is not a whole number of periods before it
 leaves a short stub — on which a lockout as long as the stub has nothing left to
 observe. Both are refused with the period named.
 
-## Phase 22 — A measure on the line the switch walk draws
+## Phase 23 — A measure on the line the switch walk draws
 
 - [x] The futures price as the expectation of the lowest normalised price, with
       the yield level at delivery normal around a forward
@@ -1220,7 +1220,7 @@ before. What it does cost is monotone convergence. The uniform grid's error at
 24, 48, 96, 192 and 384 panels runs -2.3e-6, +1.6e-8, +7.7e-7, +4.7e-7,
 +4.5e-8, so a two-point convergence check on it reports the method diverging.
 
-## Phase 23 — A curve that cannot pass through every quote
+## Phase 24 — A curve that cannot pass through every quote
 
 - [x] Nelson-Siegel and Svensson instantaneous forwards, with the integral as
       the primitive rather than the average
@@ -1347,7 +1347,7 @@ extra parameters bought a quarter of the residual and most of the
 identifiability, and which of those matters depends on whether the fitted
 parameters are going to be read or only the curve.
 
-## Phase 24 — A contract margined daily, and the measure that leaves it in
+## Phase 25 — A contract margined daily, and the measure that leaves it in
 
 - [x] The risk-neutral mean of the short rate, checked against a quadrature of
       the model's own drift rather than against itself
@@ -1399,7 +1399,7 @@ off the grid above, sits at `T1 = 5.31` years when `a = 0.01`, 2.82 when
 ### Three conventions, and the one that is linear
 
 A term rate and a rate compounded in arrears have the same value under the
-end-of-period forward measure — the telescoping identity Phase 21 is built on —
+end-of-period forward measure — the telescoping identity Phase 22 is built on —
 and different values under the risk-neutral one. The compounded adjustment is
 never the smaller of the two and is barely the larger: 11.952 basis points
 against 11.931 for a three-month contract five years out, because the extra path
@@ -1442,7 +1442,7 @@ another, non-monotone in `a` — which reads like an algebra error rather than a
 conditioning one. The term convention was unaffected and looked fine throughout,
 which is what made it convincing.
 
-## Phase 25 — The spread the bond is actually swapped into
+## Phase 26 — The spread the bond is actually swapped into
 
 - [x] A floating leg described independently of the bond, because in an asset
       swap it is
@@ -1529,7 +1529,7 @@ Under a mismatch the `100 / price` relation between the conventions also stops
 holding exactly, 1.0882953 against 1.0882709 in the holiday case. Both numbers
 are known only because the residual is computed rather than assumed away.
 
-## Phase 26 — The command line explains itself
+## Phase 27 — The command line explains itself
 
 - [x] Help text on every option, not just the ones whose meaning is obvious
       from the flag name
@@ -1547,7 +1547,7 @@ are known only because the residual is computed rather than assumed away.
 - [x] The same sweep in CI against the built wheel, so a help string that fails
       to render cannot reach a release
 
-## Phase 27 — A contract marked from inside its own schedule
+## Phase 28 — A contract marked from inside its own schedule
 
 Everything before this prices an instrument from the day it starts. A credit
 default swap is never looked at on that day: the standard contract rolls on the
@@ -1599,7 +1599,7 @@ same string or-ed with itself. Both now read the document back and compare it
 to what the code produced, and the first of them caught a row quoting an
 observed value without stating the bound it is gated at.
 
-## Phase 28 — A price is a price on a date
+## Phase 29 — A price is a price on a date
 
 `risky_bond_price` has taken a `settlement` argument since it was written, and
 for any value but its default it returned a present value today where the rest
@@ -1654,9 +1654,9 @@ Worth stating as a gap rather than fixing here: the worked example runs on one
 interpreter while the suite runs on four, so a figure that is reproducible on
 3.11 and not elsewhere would still get through.
 
-## Phase 29 — A bad date says which option it came from
+## Phase 30 — A bad date says which option it came from
 
-Phase 26 made every option's help text say what the option means. The errors
+Phase 27 made every option's help text say what the option means. The errors
 did not keep up. Forty-two places read a date as
 `date.fromisoformat(arguments.something)`, and what reached the user was the
 standard library's `Invalid isoformat string: 'next-march'` — the value, and
@@ -1684,7 +1684,7 @@ that told a user who had mistyped one of `--expiry`, `--effective` and
       an option that does not exist, a site bypassing the helper, a message
       that stops naming the option, and a helper that swallows a bad date
 
-## Phase 30 — Options nobody has chosen
+## Phase 31 — Options nobody has chosen
 
 - [x] A gate over the source, parsed rather than grepped: every defaulted
       parameter of every public function, and every defaulted field of a type
