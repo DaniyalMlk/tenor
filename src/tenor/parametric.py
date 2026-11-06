@@ -78,6 +78,8 @@ from .curve import DiscountCurve, Interpolation
 from .daycount import Basis, year_fraction
 
 __all__ = [
+    "GRID_POINTS",
+    "SERIES_LIMIT",
     "BadFit",
     "CurveFit",
     "DecaySet",

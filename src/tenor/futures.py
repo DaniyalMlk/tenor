@@ -81,6 +81,8 @@ from .daycount import Basis, year_fraction
 from .schedule import add_months
 
 __all__ = [
+    "DEFAULT_DIGITS",
+    "DEFAULT_NOTIONAL_COUPON",
     "BadDelivery",
     "BondFuture",
     "CheapestToDeliver",
