@@ -9,7 +9,7 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-All thirty-one phases in `ROADMAP.md` are built. The first seven are the
+All thirty-two phases in `ROADMAP.md` are built. The first seven are the
 foundation: dates, day counts, holiday calendars and payment schedules;
 discount curves, compounding conventions and three interpolation schemes; a
 bootstrapper over deposits, futures and par swaps; bond analytics — price,
@@ -1715,8 +1715,13 @@ it rolls to.
 
 ```python
 from datetime import date
-from tenor import Basis, HullWhite, flat_curve
-from tenor.bermudan import BermudanSwaption, bermudan_swaption
+from tenor import (
+    Basis,
+    BermudanSwaption,
+    HullWhite,
+    bermudan_swaption,
+    flat_curve,
+)
 
 reference = date(2026, 1, 15)
 curve = flat_curve(reference, date(2046, 1, 15), 0.03, basis=Basis.ACT_365F)
