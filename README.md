@@ -9,14 +9,26 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-All seven phases in `ROADMAP.md` are built: dates, day counts, holiday
-calendars and payment schedules; discount curves, compounding conventions and
-three interpolation schemes; a bootstrapper over deposits, futures and par
-swaps; bond analytics — price, yield, duration, convexity and basis point
-values; curve risk — key rate durations, shape shifts and
-instrument-by-instrument risk; spreads — Z-spread, I-spread, asset swap spreads
-in both conventions, a calibrated short rate lattice, American exercise and
-option-adjusted spread; and a command line with a worked example.
+All thirty-one phases in `ROADMAP.md` are built. The first seven are the
+foundation: dates, day counts, holiday calendars and payment schedules;
+discount curves, compounding conventions and three interpolation schemes; a
+bootstrapper over deposits, futures and par swaps; bond analytics — price,
+yield, duration, convexity and basis point values; curve risk — key rate
+durations, shape shifts and instrument-by-instrument risk; spreads — Z-spread,
+I-spread, asset swap spreads in both conventions, a calibrated short rate
+lattice, American exercise and option-adjusted spread; and a command line with
+a worked example.
+
+The rest are instruments and models that need those: holding-period return,
+floating rate notes, index-linked bonds, default risk, deliverable bond
+futures, discounting and forecasting on separate curves, swaptions and caps,
+one- and two-factor short rate models, a constant maturity swap paid outside
+the measure it is a martingale under, Bermudan exercise on a tree, a curve
+stripped from quoted volatilities, cross-currency basis, overnight rates
+compounded in arrears with lookbacks and lockouts, the delivery option in a
+bond future, a futures contract margined daily and the convexity that leaves
+in, a parametric curve with fewer parameters than quotes, and the spread a bond
+is actually swapped into.
 
 ## What is checked, and against what
 
