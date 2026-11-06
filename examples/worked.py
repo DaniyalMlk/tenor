@@ -22,24 +22,29 @@ from tenor import (
     WEEKENDS_ONLY,
     Accrual,
     Basis,
+    BermudanSwaption,
     Bond,
     BondFuture,
     CreditDefaultSwap,
     Deposit,
     Exercise,
     Frequency,
+    HullWhite,
     Interpolation,
     Lattice,
     SurvivalCurve,
     Swap,
     asset_swap_spread,
+    bermudan_swaption,
     bootstrap,
     buckets_from,
     cheapest_to_deliver,
     compare_spreads,
     conversion_factor,
+    coterminal_europeans,
     day_count,
     delivery_switch,
+    flat_curve,
     ho_lee_convexity,
     instrument_risk,
     key_rates,
@@ -725,6 +730,107 @@ for hazard, label, expected in (
     annuity = RUNNING.risky_annuity(name, curve)
     moved = 1e4 * (protection / (annuity - gap) - protection / annuity)
     check(f"accrual origin, {label}, bp of par spread", moved, expected, 1e-4)
+
+
+# -- 10. A Bermudan, against the Europeans inside it --------------------------
+
+rule("10. A Bermudan swaption, against the Europeans inside it")
+
+print(
+    """
+  Every other option here has one exercise date and a closed form. A Bermudan
+  has neither: the value of waiting is the answer to the same problem one date
+  later, so it is priced by backward induction on a trinomial tree.
+
+  The reference is therefore not this file's arithmetic. The co-terminal
+  Europeans come from `tenor.hullwhite` by Jamshidian's decomposition, which
+  shares no code with the induction, and the Bermudan has to clear the best of
+  them: exercising only on that one date is a strategy available to it. Two
+  figures measure the two routes against each other — a one-date Bermudan,
+  where the tree is answering a question the closed form also answers, and the
+  margin the seven-date one clears the bound by.
+
+  What is NOT published here is `price - best_european == switch_value`. That
+  holds to the last bit, and it holds because the switch value is defined as
+  the difference. An identity that cannot fail is not evidence.
+
+  The last row is the one the section above argues for. A lattice price is a
+  function of its mesh, so the share is quoted across four of them rather than
+  at the default alone, and the figure on the front page is the band.
+"""
+)
+
+BERMUDAN_REFERENCE = date(2026, 1, 15)
+BERMUDAN_CURVE = flat_curve(
+    BERMUDAN_REFERENCE, date(2046, 1, 15), 0.03, basis=Basis.ACT_365F
+)
+BERMUDAN_MODEL = HullWhite(a=0.05, sigma=0.01)
+SEVEN_DATES = BermudanSwaption(
+    expiries=tuple(date(year, 1, 15) for year in range(2029, 2036)),
+    maturity=date(2036, 1, 15),
+    strike=0.03,
+)
+ONE_DATE = BermudanSwaption(
+    expiries=(date(2029, 1, 15),),
+    maturity=date(2036, 1, 15),
+    strike=0.03,
+)
+#: Four meshes, each a doubling, so the quoted band is a measurement rather
+#: than the default's answer with a tolerance drawn around it.
+MESHES = (24, 48, 96, 192)
+
+BERMUDAN = bermudan_swaption(
+    BERMUDAN_CURVE, BERMUDAN_MODEL, SEVEN_DATES, BERMUDAN_REFERENCE
+)
+check("Bermudan price, 48 steps a year", BERMUDAN.price, 0.0418945292, 1e-8)
+check(
+    "best co-terminal European, closed form",
+    BERMUDAN.best_european,
+    0.0323848887,
+    1e-8,
+)
+check("switch value", BERMUDAN.switch_value, 0.0095096404, 1e-8)
+
+# A single-date Bermudan is a European the tree has to rediscover. The residual
+# is not monotone in the mesh -- 8.2e-5 at 96 steps a year and 1.2e-4 at 192 --
+# because the exercise boundary does not sit on a node and moves between nodes
+# as the mesh changes. So the claim is the worst of the four, not a rate.
+REDUCTION = []
+for steps in MESHES:
+    priced = bermudan_swaption(
+        BERMUDAN_CURVE, BERMUDAN_MODEL, ONE_DATE, BERMUDAN_REFERENCE,
+        steps_per_year=steps,
+    )
+    (ANALYTIC,) = coterminal_europeans(
+        BERMUDAN_CURVE, BERMUDAN_MODEL, ONE_DATE, BERMUDAN_REFERENCE
+    )
+    REDUCTION.append(abs(priced.price - ANALYTIC) / ANALYTIC)
+check(
+    "one date, tree against closed form, worst mesh",
+    max(REDUCTION),
+    0.002118543,
+    1e-7,
+)
+
+# The bound itself: a Bermudan is worth at least the best of its Europeans, and
+# this is the margin it clears it by. Unlike the identity above this one can
+# fail -- a tree that lost the continuation value would come in under it.
+check(
+    "the margin the seven dates clear the bound by",
+    BERMUDAN.price - BERMUDAN.best_european,
+    0.0095096404,
+    1e-8,
+)
+
+SHARES = []
+for steps in MESHES:
+    priced = bermudan_swaption(
+        BERMUDAN_CURVE, BERMUDAN_MODEL, SEVEN_DATES, BERMUDAN_REFERENCE,
+        steps_per_year=steps,
+    )
+    SHARES.append(priced.switch_value / priced.best_european)
+check("switch share of the best European, lowest mesh", min(SHARES), 0.2931040237, 1e-8)
+check("switch share of the best European, highest mesh", max(SHARES), 0.2939542404, 1e-8)
 
 
 # -- done ---------------------------------------------------------------------

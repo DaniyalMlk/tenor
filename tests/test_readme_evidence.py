@@ -19,9 +19,18 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
+
+from tenor import (
+    Basis,
+    BermudanSwaption,
+    HullWhite,
+    bermudan_swaption,
+    flat_curve,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
@@ -37,6 +46,10 @@ QUOTED = (
     "47.52",  # Hull's futures convexity adjustment
     "7.89499734",  # Macaulay duration against its closed form
     "4166.666667",  # accrued premium on 10mm at 100bp, a day count
+    "0.04189452915",  # the Bermudan, 48 steps a year
+    "0.03238488873",  # the best co-terminal European, in closed form
+    "0.2931040237",  # switch share of it at 24 steps a year, the band's floor
+    "0.2939542404",  # and at 192, its ceiling
 )
 
 #: Figures that are floating-point noise and whose digits are therefore not
@@ -55,6 +68,10 @@ BOUNDED = (
     # 3.13, which is why this is a bound and not one of the EXACT rows below.
     ("risky less riskless forward price, settling 2026-01-05", 1e-13),
     ("risky less riskless forward price, settling 2028-01-05", 1e-13),
+    # Not noise -- a discretisation error, and the only entry here whose
+    # bound is the claim rather than a concession to the last bits. The
+    # README promises 2.2e-3 and the worst of four meshes is 2.1e-3.
+    ("one date, tree against closed form, worst mesh", 2.2e-3),
 )
 
 #: Rows whose reference is an identity rather than a published figure, so the
@@ -150,6 +167,8 @@ ROWS = (
     "Protection before the valuation date, priced from inside the schedule",
     "A settlement amount against its own split into principal and accrued",
     "A defaultable bond's forward price, against the riskless one at no hazard",
+    "A one-date Bermudan on the tree, against the same option in closed form",
+    "The switch value as a share of the best co-terminal European",
 )
 
 
@@ -236,3 +255,78 @@ def test_the_suite_size_on_the_front_page_is_not_wildly_stale() -> None:
         assert 0.75 * actual <= figure <= 1.25 * actual, (
             f"the README says {figure} tests somewhere and there are {actual}"
         )
+
+
+def test_the_bermudan_percentages_in_the_prose_are_recomputed() -> None:
+    """The percentages beside the Bermudan example, against the library.
+
+    Everything above checks a figure against the worked example's *output*,
+    which is the right direction for a figure the example prints. These are not
+    printed by it. The example publishes the shares as fractions --
+    ``0.2931040237`` and ``0.2939542404`` -- and the prose renders them as
+    percentages to three decimal places, so the rendering is a second place the
+    number can be wrong and the first place a reader looks.
+
+    It had been wrong. The inline comment read "29.4% of it" on the line below
+    ``best_european`` and two below ``price``, and against the price the share
+    is 22.7%. The figure was right for a denominator the sentence did not name.
+    So both denominators are computed here and both are required to appear,
+    which is the only form of this check that cannot be satisfied by the right
+    number sitting beside the wrong noun.
+    """
+    reference = date(2026, 1, 15)
+    curve = flat_curve(reference, date(2046, 1, 15), 0.03, basis=Basis.ACT_365F)
+    model = HullWhite(a=0.05, sigma=0.01)
+    option = BermudanSwaption(
+        expiries=tuple(date(year, 1, 15) for year in range(2029, 2036)),
+        maturity=date(2036, 1, 15),
+        strike=0.03,
+    )
+    text = README.read_text()
+    priced = bermudan_swaption(curve, model, option, reference)
+
+    of_best = priced.switch_value / priced.best_european
+    of_price = priced.switch_value / priced.price
+
+    # The comment line is pinned whole, not searched for across the page.
+    # Asserting "29.4% of the best European" appears *somewhere* in the README
+    # passes on the strength of the paragraph below the example, so reverting
+    # the comment to "29.4% of it" -- the original defect -- went unnoticed by
+    # the first version of this test. The value, the denominator and their
+    # order are one string, anchored to the line that renders them.
+    comment = (
+        f"value.switch_value    # {priced.switch_value:.6f} -- {of_best:.1%} "
+        f"of the best European, not of the price"
+    )
+    assert comment in text, (
+        f"the example's switch-value line is not {comment!r}. A share needs the "
+        "quantity it is a share of on the same line as the figure."
+    )
+    assert f"{of_price:.1%} of the price" in text, (
+        f"the prose does not say {of_price:.1%} is the share of the price"
+    )
+
+    # The gap between the two readings is the reason the sentence exists, so it
+    # is recomputed rather than described. Writing "six and a half" here was
+    # wrong by two tenths of a point, which is the size of error a word hides
+    # and a figure does not.
+    gap = 100 * (of_best - of_price)
+    assert f"{gap:.1f} percentage points apart" in text, (
+        f"the prose does not state the gap as {gap:.1f} percentage points"
+    )
+
+    # Every mesh in the band, each to the precision the prose renders it.
+    for steps in (24, 48, 96, 192):
+        at_mesh = bermudan_swaption(
+            curve, model, option, reference, steps_per_year=steps
+        )
+        share = at_mesh.switch_value / at_mesh.best_european
+        assert f"{share:.3%}" in text, (
+            f"the band in the prose does not contain {share:.3%}, the share at "
+            f"{steps} steps a year"
+        )
+
+    # And the band's two ends are the ones quoted in the table, rounded the way
+    # the table rounds them. A table saying 29.3 to 29.4% while the prose says
+    # something else is the disagreement this pins.
+    assert "29.3 to 29.4% across 24 to 192 steps a year" in text

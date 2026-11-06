@@ -1759,3 +1759,46 @@ is not, because asserting it would mean deciding here which of those
 twenty-four are public — the judgement this phase just moved out of the gate
 and into the modules. Closing it means giving those two modules an `__all__`
 and completing the others, after which the equality replaces the containment.
+
+## Phase 33 — A percentage of which quantity
+
+- [x] A tenth worked-example section for the Bermudan, so the four figures the
+      front page quoted are produced by the gate that runs in CI rather than
+      copied into the document once
+- [x] The reference taken from `tenor.hullwhite` — the co-terminal Europeans by
+      Jamshidian's decomposition, which shares no code with backward induction —
+      rather than from arithmetic restated in the example
+- [x] `price - best_european == switch_value` deliberately not published: it
+      holds to the last bit because the switch value is defined as the
+      difference, and an identity that cannot fail is not evidence
+- [x] The one-date reduction published as the worst of four meshes rather than
+      as a convergence rate, because the residual is not monotone in the mesh —
+      8.2e-5 at 96 steps a year and 1.2e-4 at 192, the exercise boundary not
+      sitting on a node
+- [x] The inline comment's denominator named: it read "29.4% of it" below a
+      line ending in `best_european` and two below one ending in `price`, and
+      against the price the share is 22.7% — right figure, unnamed denominator,
+      6.7 percentage points between the two readings
+- [x] The share quoted as the band it is: 29.395%, 29.364%, 29.310% and 29.313%
+      at 24, 48, 96 and 192 steps a year, with both ends enforced rather than a
+      tolerance drawn around the default mesh's answer
+- [x] The four rendered percentages pinned as well as the fractions, since the
+      example prints fractions and the prose renders percentages, which is a
+      second place the number can be wrong and the first place a reader looks
+
+### The check that was satisfied by the rest of the page
+
+The first version of the gate asserted that `29.4% of the best European`
+appeared in the README. It does — in the paragraph below the example, which was
+added in the same change. So reverting the comment to the exact defect the test
+was written for left it green.
+
+A figure quoted outside a table has to be pinned to the element that renders
+it, not searched for across the document, and a value and the quantity it is a
+share of belong in one string so that their order is part of the claim. The
+assertion is now the whole comment line.
+
+Worth keeping in mind for the two tests here that read the worked example's
+output: a figure that stops reproducing fails them as a fixture *error* rather
+than a failure, because the fixture is what asserts the example exited zero.
+Both are red; only one says FAILED.
