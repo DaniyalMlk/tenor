@@ -1760,6 +1760,10 @@ twenty-four are public — the judgement this phase just moved out of the gate
 and into the modules. Closing it means giving those two modules an `__all__`
 and completing the others, after which the equality replaces the containment.
 
+*Closed by the phase below, which found the judgement was not needed: in every
+module concerned the public definitions were already exactly what `__init__`
+imports.*
+
 ## Phase 33 — A percentage of which quantity
 
 - [x] A tenth worked-example section for the Bermudan, so the four figures the
@@ -1802,3 +1806,52 @@ Worth keeping in mind for the two tests here that read the worked example's
 output: a figure that stops reproducing fails them as a fixture *error* rather
 than a failure, because the fixture is what asserts the example exited zero.
 Both are red; only one says FAILED.
+
+## Phase 34 — A declaration, not a curated list
+
+- [x] `__all__` for `floating` and `inflation`, which carried none and were
+      therefore exempt from every check the previous phase added
+- [x] Five names a module defines and had forgotten to declare: `cms.RatePayoff`,
+      whose siblings `OptionPayoff` and `PowerPayoff` were declared;
+      `futures.DEFAULT_DIGITS` and `DEFAULT_NOTIONAL_COUPON`;
+      `parametric.GRID_POINTS` and `SERIES_LIMIT`
+- [x] The root asserted to be exactly the union of the modules' declarations
+      plus `__version__`, so a name the root offers and no module claims fails
+      as well as the other way round
+- [x] A module's `__all__` required to contain every public name the module
+      defines, which catches the next omission at the module instead of letting
+      it travel to the root
+- [x] A name declared but not defined treated as a re-export, with the one case
+      in the package pinned: `curve` re-exports `rates.BadRate`, imports it and
+      never raises it, so the entry's only effect is a second import path to a
+      name already at the root
+- [x] The probe reading source with `ast` rather than attributes, and tested
+      against source written for it rather than only against the package
+
+### Why none of this needed a judgement
+
+The previous phase stopped at containment on purpose: asserting the equality
+meant deciding, in the gate, which of twenty-four names were public. Measuring
+them answered it instead. In every module concerned the public top-level
+definitions were **exactly** what `src/tenor/__init__.py` already imports, so
+each `__all__` records the surface the package has been shipping. The gate got
+stronger without anybody's opinion entering it.
+
+### Why the probe reads source and not attributes
+
+The obvious implementation asks the imported module which attributes it defines
+rather than imports, and the usual test for that is `obj.__module__`. A bare
+`int`, `float` or `str` does not have one. Four of the five forgotten names —
+`DEFAULT_DIGITS`, `DEFAULT_NOTIONAL_COUPON`, `GRID_POINTS`, `SERIES_LIMIT` —
+are bare numbers, so the attribute sweep is blind to exactly the cases this
+phase was written for.
+
+Three of the probe's branches are the only ones `src/tenor` exercises: plain
+functions, classes and plain assignments. No module here declares an `async
+def` or an annotated assignment at the top level, and none assigns two names in
+one statement, so those paths were carried by reading rather than by running.
+They are now run against a source string written for the purpose, with the
+exclusions asserted as well as the inclusions — a probe that counted imports
+would report every module as failing to declare `math`, and one that missed
+`__all__` itself would report every module as failing to declare its own
+declaration.
