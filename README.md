@@ -1715,8 +1715,13 @@ it rolls to.
 
 ```python
 from datetime import date
-from tenor import Basis, HullWhite, flat_curve
-from tenor.bermudan import BermudanSwaption, bermudan_swaption
+from tenor import (
+    Basis,
+    BermudanSwaption,
+    HullWhite,
+    bermudan_swaption,
+    flat_curve,
+)
 
 reference = date(2026, 1, 15)
 curve = flat_curve(reference, date(2046, 1, 15), 0.03, basis=Basis.ACT_365F)

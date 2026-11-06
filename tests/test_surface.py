@@ -38,12 +38,23 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import re
 from collections import Counter
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 import tenor
+
+ROOT = Path(__file__).resolve().parent.parent
+
+#: ``from tenor.something import ...`` in a front-page example: an import that
+#: reaches past the package into one of its modules.
+SUBMODULE_IMPORT = re.compile(r"^from (tenor\.[a-z0-9_]+) import", re.MULTILINE)
+
+#: ``from tenor import ...``, the house style every other example uses.
+ROOT_IMPORT = re.compile(r"^from tenor import", re.MULTILINE)
 
 #: The command line is not part of the importable surface: it is an entry point
 #: and its names are wired to ``argparse``, not to callers.
@@ -153,6 +164,35 @@ def test_the_modules_without_a_declaration_are_the_ones_pinned_here() -> None:
     assert silent == set(NO_DUNDER_ALL), (
         f"modules carrying no __all__: {sorted(silent)}; "
         f"pinned: {sorted(NO_DUNDER_ALL)}"
+    )
+
+
+def test_the_front_page_imports_from_the_package_and_not_from_inside_it() -> None:
+    """No example on the front page reaches into a submodule.
+
+    This is the check that would have caught the original defect through the
+    documentation rather than through the surface, and it is worth having
+    because it caught it *in the document*: thirteen examples wrote
+    ``from tenor import ...`` and the Bermudan one wrote
+    ``from tenor.bermudan import BermudanSwaption, bermudan_swaption`` on the
+    line directly below a ``from tenor import Basis, HullWhite, flat_curve``.
+    The example had been written around the missing export, in adjacent lines,
+    and the workaround read as a style choice.
+
+    So the convention is asserted rather than left to whoever writes the next
+    example: if a module is not re-exported, its example cannot be written in
+    the house style, and that shows up here instead of being worked around.
+    """
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    reaching_in = sorted(set(SUBMODULE_IMPORT.findall(readme)))
+    assert not reaching_in, (
+        "front-page examples importing from inside the package rather than from "
+        f"it: {reaching_in}. Either re-export the names or say here why this one "
+        "is different."
+    )
+    assert ROOT_IMPORT.search(readme) is not None, (
+        "no `from tenor import` line found on the front page at all, so the "
+        "check above passed by reading nothing"
     )
 
 
