@@ -130,8 +130,8 @@ see. It exits non-zero if any of them moves.
       refusing to publish when the tag and the declared version disagree
 - [x] The sdist and the wheel each installed into a clean environment and made to
       bootstrap the bundled quote screen, on pull requests as well as on a tag
-- [ ] A first release on the index, which waits on the publisher being registered
-      there for this project
+- [x] A first release on the index: `tenor-curves` 0.1.0, published by the tag
+      workflow once the publisher was registered for this project
 
 ## Phase 9 — Holding-period return
 
@@ -1067,7 +1067,6 @@ then be published on the payment date.
       makes one convention worth what another is worth, solved rather than
       searched because value is linear in spread
 - [x] A command line route that prints the replication error beside each rate
-- [ ] A first release on the package index
 
 ### The plain case is an identity, and that is the reason to build it here
 
@@ -1712,3 +1711,51 @@ that told a user who had mistyped one of `--expiry`, `--effective` and
 - [x] The front page's suite size checked wherever it is stated, not only where
       it is stated first: the page says it twice and the second figure had
       drifted a quarter low behind a guard that stopped at the first match
+
+## Phase 32 — The surface is what the modules say it is
+
+- [x] `bermudan` re-exported from the package root, which it never was: a
+      trinomial tree, coterminal Europeans and `bermudan_swaption`, ten names in
+      the module's own `__all__`, none of them reachable as `tenor.<name>`
+- [x] Seven more names a module declares public and the root did not carry —
+      `cms.Fixing`, `cms.Smile`, `g2.bond_option`, `horizon.IDENTITY_TOLERANCE`,
+      `multicurve.DualValuation`, `risk.Valuation`, `risk.nearest_bucket` — four
+      of them type aliases, which is the worst kind to lose
+- [x] The surface recomputed from the modules rather than compared against a
+      second hand-kept list, with a module's own `__all__` as the authority so
+      the judgement about what is public stays beside the code it is about
+- [x] A module absent from the root entirely reported as the module, not as its
+      names one at a time
+- [x] An `__all__` entry that is not an attribute of the package refused, since
+      a rename that updates the import and not the list only fails for somebody
+      doing `import *`
+- [x] The set of modules carrying no `__all__` pinned in both directions, so a
+      new module arriving without one is a decision rather than a silent
+      exemption from every check above
+- [x] Both roadmap items claiming a first release on the index is still pending
+      resolved: `tenor-curves` 0.1.0 has been on the index since the release
+      went out, and one of the two was filed under the overnight-rates phase,
+      which has nothing to do with publishing
+
+### Why the suite could not see any of this
+
+Every test file here imports submodules directly — `from tenor.bermudan import
+...` — which is the right style for a test and exactly the style that cannot
+see a missing re-export. The module is exercised in full; the surface it is
+absent from is never touched. The command line reached it too, through its own
+`bermudan` subcommand. The only caller the omission stopped was one following
+the package's own convention, that public names live at the root, which is the
+convention the other twenty-nine modules keep.
+
+That is the general shape worth remembering: a gap between two things, each of
+which is tested on its own. Neither test is wrong and neither can see it.
+
+### What is still not asserted
+
+Twenty-four names reach the root without appearing in any module's `__all__`.
+`floating` and `inflation` declare none at all, and a handful of constants
+elsewhere were never added to theirs. The containment is asserted; the equality
+is not, because asserting it would mean deciding here which of those
+twenty-four are public — the judgement this phase just moved out of the gate
+and into the modules. Closing it means giving those two modules an `__all__`
+and completing the others, after which the equality replaces the containment.
