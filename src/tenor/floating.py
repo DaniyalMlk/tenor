@@ -92,6 +92,13 @@ from .rates import Compounding
 from .schedule import Frequency, Period, Schedule, generate
 from .solve import Root, brent
 
+__all__ = [
+    "BadMargin",
+    "BadNote",
+    "FloatingCoupon",
+    "FloatingNote",
+]
+
 
 class BadNote(ValueError):
     """A floating rate note, or a settlement date, that does not describe a trade."""
