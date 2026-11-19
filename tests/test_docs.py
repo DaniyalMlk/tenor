@@ -115,9 +115,12 @@ def stated_phase_count(readme: str) -> int:
 def cross_references(roadmap: str) -> list[tuple[int, int]]:
     """Every prose reference to a phase, as (phase it is written in, named).
 
-    Headings are excluded: a heading is the phase, not a reference to one.
+    A heading's own number is excluded, being the phase rather than a
+    reference to it. A phase its title names is not: excluding the whole
+    heading line would make ``## Phase 12 — Building on phase 13`` invisible
+    to the backwards rule.
     """
-    headings = {match.start() for match in HEADING.finditer(roadmap)}
+    own_numbers = {match.start() + len("## ") for match in HEADING.finditer(roadmap)}
     bounds = sorted(
         (match.start(), int(match.group(1))) for match in HEADING.finditer(roadmap)
     )
@@ -133,8 +136,7 @@ def cross_references(roadmap: str) -> list[tuple[int, int]]:
 
     found: list[tuple[int, int]] = []
     for match in REFERENCE.finditer(roadmap):
-        line_start = roadmap.rfind("\n", 0, match.start()) + 1
-        if line_start in headings:
+        if match.start() in own_numbers:
             continue
         for group in (1, 2):
             if match.group(group) is not None:
@@ -245,3 +247,9 @@ def test_the_reference_probe_finds_the_references_that_are_there(roadmap: str) -
         "a reference was found outside any phase, so the enclosing-phase lookup "
         "returned its zero default and the backwards check cannot see it"
     )
+
+
+def test_a_phase_named_in_a_heading_title_is_a_reference() -> None:
+    """Only the heading's own number is skipped, not the rest of its line."""
+    text = "## Phase 1 — A\n\n## Phase 2 — Building on phase 1\n\n## Phase 3 — Before phase 4\n"
+    assert cross_references(text) == [(2, 1), (3, 4)]
