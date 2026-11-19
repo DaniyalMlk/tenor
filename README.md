@@ -9,7 +9,7 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-All thirty-four phases in `ROADMAP.md` are built. The first seven are the
+All thirty-five phases in `ROADMAP.md` are built. The first seven are the
 foundation: dates, day counts, holiday calendars and payment schedules;
 discount curves, compounding conventions and three interpolation schemes; a
 bootstrapper over deposits, futures and par swaps; bond analytics — price,
@@ -83,12 +83,12 @@ name and published nothing; the module, the command and every identifier are
 unchanged, and `tenor-curves` also works as a command so that `uvx
 tenor-curves` resolves.
 
-> **Not on the package index yet.** The `pip install` line above is what it
-> will be; until the first release lands, install from source:
->
-> ```bash
-> pip install "git+https://github.com/DaniyalMlk/tenor.git"
-> ```
+For anything merged since the last release, install the tip of `main` from the
+repository:
+
+```bash
+pip install "git+https://github.com/DaniyalMlk/tenor.git"
+```
 
 Python 3.10 or newer. The library imports only the standard library, so there is
 nothing else to resolve and nothing to compile.

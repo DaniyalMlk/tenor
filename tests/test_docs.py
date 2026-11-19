@@ -115,9 +115,12 @@ def stated_phase_count(readme: str) -> int:
 def cross_references(roadmap: str) -> list[tuple[int, int]]:
     """Every prose reference to a phase, as (phase it is written in, named).
 
-    Headings are excluded: a heading is the phase, not a reference to one.
+    A heading's own number is excluded, being the phase rather than a
+    reference to it. A phase its title names is not: excluding the whole
+    heading line would make ``## Phase 12 — Building on phase 13`` invisible
+    to the backwards rule.
     """
-    headings = {match.start() for match in HEADING.finditer(roadmap)}
+    own_numbers = {match.start() + len("## ") for match in HEADING.finditer(roadmap)}
     bounds = sorted(
         (match.start(), int(match.group(1))) for match in HEADING.finditer(roadmap)
     )
@@ -133,8 +136,7 @@ def cross_references(roadmap: str) -> list[tuple[int, int]]:
 
     found: list[tuple[int, int]] = []
     for match in REFERENCE.finditer(roadmap):
-        line_start = roadmap.rfind("\n", 0, match.start()) + 1
-        if line_start in headings:
+        if match.start() in own_numbers:
             continue
         for group in (1, 2):
             if match.group(group) is not None:
@@ -230,11 +232,12 @@ def test_the_reference_probe_finds_the_references_that_are_there(roadmap: str) -
 
     Both reference tests pass vacuously if the pattern stops matching, and a
     gate that passes because it found nothing to check is worse than no gate.
-    The roadmap has eight prose references, two of them in one compound
-    sentence, so nine (written in, named) pairs come out.
+    The roadmap has ten prose references, two of them in one compound
+    sentence, so eleven (written in, named) pairs come out.
     """
     found = cross_references(roadmap)
-    assert len(found) == 9, f"expected 9 reference pairs, found {len(found)}: {found}"
+    assert len(found) == 11, f"expected 11 reference pairs, found {len(found)}: {found}"
+    assert {(35, 32), (35, 8)} <= set(found), "phase 35's two references are missing"
     assert (17, 16) in found, (
         "the 'Phase 16 is a real model' reference, written in phase 17, is missing"
     )
@@ -245,3 +248,75 @@ def test_the_reference_probe_finds_the_references_that_are_there(roadmap: str) -
         "a reference was found outside any phase, so the enclosing-phase lookup "
         "returned its zero default and the backwards check cannot see it"
     )
+
+
+def test_a_phase_named_in_a_heading_title_is_a_reference() -> None:
+    """Only the heading's own number is skipped, not the rest of its line."""
+    text = "## Phase 1 — A\n\n## Phase 2 — Building on phase 1\n\n## Phase 3 — Before phase 4\n"
+    assert cross_references(text) == [(2, 1), (3, 4)]
+
+
+#: Phase 8's release item, checked or not.
+RELEASE_ITEM = re.compile(r"^- \[( |x)\] A first release on the index", re.MULTILINE)
+
+#: What the Installing section said while there was no release.
+UNRELEASED = re.compile(
+    r"Not on the package index yet|until the first release|is what it[\s>]+will be",
+    re.IGNORECASE,
+)
+
+
+def section(markdown: str, heading: str) -> str:
+    """The body under a ``## `` heading, up to the next ``## `` heading."""
+    start = markdown.find(f"\n{heading}\n")
+    assert start != -1, f"no {heading!r} section"
+    body = start + len(heading) + 2
+    following = re.search(r"^## ", markdown[body:], re.MULTILINE)
+    return markdown[body : body + following.start()] if following else markdown[body:]
+
+
+def release_recorded(roadmap: str) -> bool:
+    found: list[str] = RELEASE_ITEM.findall(roadmap)
+    assert len(found) == 1, f"expected one release item in the roadmap, found {len(found)}"
+    return found[0] == "x"
+
+
+def installing_says_unreleased(readme: str) -> bool:
+    return UNRELEASED.search(section(readme, "## Installing")) is not None
+
+
+def test_the_release_stays_recorded(roadmap: str) -> None:
+    """``tenor-curves`` 0.1.0 is published, and a published version is permanent."""
+    assert release_recorded(roadmap)
+
+
+def test_the_installing_section_agrees_with_the_roadmap(readme: str, roadmap: str) -> None:
+    """The two disagreed: phase 8 recorded the release and the page denied it.
+
+    Phase 32 resolved two roadmap items that still claimed the release was
+    pending and did not reach the README, because nothing compared them.
+    """
+    assert release_recorded(roadmap) != installing_says_unreleased(readme)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("> **Not on the package index yet.** Use git.", True),
+        ("> The line above is what it\n> will be.", True),
+        ("```bash\npip install tenor-curves\n```", False),
+    ],
+)
+def test_installing_says_unreleased_reads_the_section(body: str, expected: bool) -> None:
+    readme = f"# T\n\n## Installing\n\n{body}\n\n## Next\n\nNot on the package index yet.\n"
+    assert installing_says_unreleased(readme) is expected
+
+
+@pytest.mark.parametrize(("box", "expected"), [("x", True), (" ", False)])
+def test_release_recorded_reads_the_box(box: str, expected: bool) -> None:
+    assert release_recorded(f"- [{box}] A first release on the index: 0.1.0\n") is expected
+
+
+def test_a_missing_release_item_is_an_error() -> None:
+    with pytest.raises(AssertionError, match="found 0"):
+        release_recorded("## Phase 8 — X\n")

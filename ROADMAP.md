@@ -1855,3 +1855,20 @@ exclusions asserted as well as the inclusions — a probe that counted imports
 would report every module as failing to declare `math`, and one that missed
 `__all__` itself would report every module as failing to declare its own
 declaration.
+
+## Phase 35 — The release the front page still denied
+
+Phase 32 resolved two roadmap items that still claimed the first release was
+pending. The README's Installing section said the same thing — "Not on the
+package index yet" — and was not reached, because nothing compared the two.
+
+- [x] The Installing section saying the package is on the index, with
+      installing from `main` kept for work merged since the last release
+- [x] Phase 8's release item pinned as checked, since a published version is
+      permanent, and the Installing section held to agreeing with it
+- [x] The section read alone, up to the next heading, so the same words further
+      down the page are not a claim
+- [x] The note's old wording matched across a blockquote line break, which the
+      first version of the pattern could not do
+- [x] The reference probe skipping only a heading's own number, so a phase
+      named in a heading's title is still held to pointing backwards
