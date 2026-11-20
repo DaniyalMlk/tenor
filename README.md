@@ -9,7 +9,7 @@ not approximately right, it is answering a different question. This library
 treats every convention as an argument with a name, never a default, and checks
 each one against the published rules rather than against itself.
 
-All thirty-five phases in `ROADMAP.md` are built. The first seven are the
+All thirty-six phases in `ROADMAP.md` are built. The first seven are the
 foundation: dates, day counts, holiday calendars and payment schedules;
 discount curves, compounding conventions and three interpolation schemes; a
 bootstrapper over deposits, futures and par swaps; bond analytics — price,
@@ -69,7 +69,7 @@ worked example enforces.
 python examples/worked.py     # all ten sections, non-zero if a figure moves
 ```
 
-Behind them: 2015 tests, run on Python 3.10 through 3.13.
+Behind them: 2080 tests, run on Python 3.10 through 3.13.
 
 ## Installing
 
@@ -2394,7 +2394,7 @@ reassuring and wrong.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 2015 tests
+pytest          # 2080 tests
 mypy --strict
 ruff check .
 ```

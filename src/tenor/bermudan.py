@@ -86,7 +86,14 @@ from itertools import pairwise
 from .calendar import WEEKENDS_ONLY, Calendar, Rolling
 from .curve import DiscountCurve
 from .daycount import Basis, year_fraction
-from .hullwhite import CouponBondOption, Flow, HullWhite, Method, coupon_bond_option
+from .hullwhite import (
+    CouponBondOption,
+    Flow,
+    HullWhite,
+    Method,
+    _one_factor,
+    coupon_bond_option,
+)
 from .options import Payoff, Swaption
 from .schedule import Frequency, Schedule, generate
 
@@ -474,6 +481,7 @@ def short_rate_level(curve: DiscountCurve, model: HullWhite, time: float) -> flo
     volatility, no convexity, no spread, and all three quantities coincide — which
     is also why that case can be checked against arithmetic off the curve alone.
     """
+    _one_factor(model, "short_rate_level")
     convexity = -math.expm1(-model.a * time)
     return curve.instantaneous_forward(time) + model.sigma**2 * convexity**2 / (
         2.0 * model.a**2
@@ -507,6 +515,7 @@ def build_tree(
             fall outside the range that keeps branching probabilities
             non-negative.
     """
+    _one_factor(model, "build_tree")
     if steps_per_year <= 0:
         raise BadBermudan(f"steps per year must be positive, got {steps_per_year!r}")
     if not times:
@@ -700,6 +709,7 @@ def coterminal_europeans(
     Bermudan with them tests backward induction against analysis that shares no
     code with it.
     """
+    _one_factor(model, "coterminal_europeans")
     return tuple(
         coupon_bond_option(curve, model, bond, method)
         for bond in coterminal_bonds(option, reference, basis)
@@ -735,6 +745,7 @@ def bermudan_swaption(
             exercise date is not a fixed-leg boundary, or if the grid cannot
             carry a single state spacing.
     """
+    _one_factor(model, "bermudan_swaption")
     if option.expiries[0] <= reference:
         raise BadBermudan(
             f"{option.name} may first be exercised on "

@@ -1872,3 +1872,27 @@ package index yet" — and was not reached, because nothing compared the two.
       first version of the pattern could not do
 - [x] The reference probe skipping only a heading's own number, so a phase
       named in a heading's title is still held to pointing backwards
+
+## Phase 36 — A model of the kind the calculation is written for
+
+`HullWhite` and `G2` are both exported from the root and both carry an `a` and a
+`sigma`. Nothing checked which one a function was handed, so a two-factor model
+passed to a one-factor calculation did whatever the first attribute it read
+allowed. `risk_neutral_drift`, `short_rate_level` and `build_tree` answered as
+Hull-White with the second factor dropped. Six more failed on an attribute the
+`G2` lacks, or with `'float' object is not callable`, because `G2.b` is a field
+where `HullWhite.b` is a method.
+
+- [x] Every public function that takes a Hull-White model refusing anything
+      else with `BadModel`, naming itself and what it was given, before reading
+      an attribute — fifteen across `hullwhite`, `convexity` and `bermudan`
+- [x] The same for the seven `g2` functions, given a `HullWhite`
+- [x] The functions found by the annotation on their `model` parameter rather
+      than listed, so a new one is checked as soon as it exists
+- [x] Called with `None` for every other argument, so a guard placed after the
+      first read fails the test rather than passing it
+- [x] The three that used to answer, called with real arguments, and the whole
+      file run against the previous source first: 28 of 30 fail there, and the
+      two that pass are the probe's own tests
+
+The command line constructs the model itself and always builds the right one.

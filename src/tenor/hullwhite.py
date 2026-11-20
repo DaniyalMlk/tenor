@@ -237,6 +237,21 @@ class HullWhite:
         )
 
 
+def _one_factor(model: object, calculation: str) -> None:
+    """Refuse anything but a :class:`HullWhite` before an attribute is read.
+
+    A :class:`~tenor.g2.G2` carries an ``a`` and a ``sigma`` too, so a
+    calculation that reads only those two would price its first factor and drop
+    the second without complaint, and one that reads anything else would fail
+    on an attribute that says nothing about the mistake.
+    """
+    if not isinstance(model, HullWhite):
+        raise BadModel(
+            f"{calculation} is a one-factor Hull-White calculation and was given "
+            f"a {type(model).__name__}; build a HullWhite(a, sigma) for it"
+        )
+
+
 def reprices_curve(curve: DiscountCurve, model: HullWhite) -> float:
     """The worst relative error in repricing the curve's own pillars at ``t = 0``.
 
@@ -253,6 +268,7 @@ def reprices_curve(curve: DiscountCurve, model: HullWhite) -> float:
     Returns:
         The largest relative error across the curve's pillars.
     """
+    _one_factor(model, "reprices_curve")
     short_rate = curve.instantaneous_forward(0.0)
     worst = 0.0
     for time in curve.times:
@@ -296,6 +312,7 @@ def zero_bond_option(
     Raises:
         BadModel: If the strike is not positive or the dates are out of order.
     """
+    _one_factor(model, "zero_bond_option")
     if not math.isfinite(strike) or strike <= 0.0:
         raise BadModel(f"a bond option strike must be positive, got {strike!r}")
     if expiry < 0.0:
@@ -392,6 +409,7 @@ def forward_measure(
     Raises:
         BadModel: If the expiry is not positive or no probe is usable.
     """
+    _one_factor(model, "forward_measure")
     if not math.isfinite(expiry) or expiry <= 0.0:
         raise BadModel(f"a forward measure needs a positive expiry, got {expiry!r}")
     variance = model.short_rate_variance(expiry)
@@ -570,6 +588,7 @@ def coupon_bond_option(
         BadModel: If the decomposition is asked for on a bond whose price is
             not monotone in the short rate by inspection.
     """
+    _one_factor(model, "coupon_bond_option")
     if method is Method.QUADRATURE:
         return _by_quadrature(curve, model, option)
     if not option.is_monotone:
@@ -713,6 +732,7 @@ def swaption_price(
     Raises:
         BadModel: If the expiry is not after the reference date.
     """
+    _one_factor(model, "swaption_price")
     if option.expiry <= reference:
         raise BadModel(
             f"swaption {option.name} expires on {option.expiry.isoformat()}, on or "
