@@ -2390,6 +2390,29 @@ single adjustment in the strip is 11.6. The curve error is neither the largest
 adjustment nor the first one, which is why checking one contract would have been
 reassuring and wrong.
 
+## Known gaps
+
+What the package does not do. Each line is held by a test,
+`tests/test_known_gaps.py`, that calls the entry point involved and fails once
+the gap is closed, so a line cannot outlive the gap it describes. What the
+package refuses on purpose is documented beside the behaviour it protects and
+is not repeated here.
+
+- **Bermudan swaptions are priced on a one-factor tree.** `bermudan_swaption`
+  takes a Hull-White model and refuses a `G2`, so the rates at different
+  exercise dates are as correlated as a single factor makes them, which is
+  more than the second factor of `G2` can allow.
+- **G2++ prices caps and bond options, and no swaption.** `g2` has caplets,
+  caps and zero-coupon bond options; the one European swaption pricer is
+  Hull-White's.
+- **No holiday calendar is bundled.** `WEEKENDS_ONLY` is the only calendar the
+  package ships. Real holidays are the caller's to supply through
+  `calendar_from`.
+- **Inflation is projected at one flat rate.** Past the published history,
+  `ReferenceIndex.projected` grows the index at a constant annual rate, so
+  there is no seasonality and no forward-implied path. A caller who needs
+  either builds the monthly series instead.
+
 ## Development
 
 ```bash
