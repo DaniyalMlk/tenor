@@ -86,6 +86,7 @@ WORDS = {
     "thirty-four": 34,
     "thirty-five": 35,
     "thirty-six": 36,
+    "thirty-seven": 37,
 }
 
 #: The sentence the count is written in, on the front page.
@@ -233,12 +234,13 @@ def test_the_reference_probe_finds_the_references_that_are_there(roadmap: str) -
 
     Both reference tests pass vacuously if the pattern stops matching, and a
     gate that passes because it found nothing to check is worse than no gate.
-    The roadmap has ten prose references, two of them in one compound
-    sentence, so eleven (written in, named) pairs come out.
+    The roadmap has eleven prose references, two of them in one compound
+    sentence, so twelve (written in, named) pairs come out.
     """
     found = cross_references(roadmap)
-    assert len(found) == 11, f"expected 11 reference pairs, found {len(found)}: {found}"
+    assert len(found) == 12, f"expected 12 reference pairs, found {len(found)}: {found}"
     assert {(35, 32), (35, 8)} <= set(found), "phase 35's two references are missing"
+    assert (37, 36) in found, "phase 37's reference to phase 36 is missing"
     assert (17, 16) in found, (
         "the 'Phase 16 is a real model' reference, written in phase 17, is missing"
     )

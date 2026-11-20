@@ -1896,3 +1896,33 @@ where `HullWhite.b` is a method.
       two that pass are the probe's own tests
 
 The command line constructs the model itself and always builds the right one.
+
+## Phase 37 — What the package does not do
+
+The front page listed what is built and nowhere what is not. The gaps were
+surveyed for absences with an entry point to call; the package's many
+deliberate refusals are documented where they apply and were left off.
+
+- [x] A known-gaps section: the Bermudan tree is one-factor, G2++ prices no
+      swaption, no holiday calendar is bundled, inflation projects at one rate
+- [x] One predicate per line in `tests/test_known_gaps.py`: a Bermudan priced
+      under Hull-White and refused under G2++, the `g2` declaration pinned,
+      every `Calendar` instance in every module scanned rather than names
+      searched, and the projected index's annualised growth measured month by
+      month
+- [x] The page and the predicates held to the same lines in the same order,
+      the section to ending at the heading after it, and no bold lead allowed
+      to wrap a line, which the bullet reader cannot see across
+- [x] Nine breaks caught, one of them only after it was redone
+
+### The break that was not one
+
+The first way of simulating a two-factor Bermudan arriving was to delete
+`bermudan_swaption`'s own model check, and the gate stayed green. Not a miss:
+the functions it calls refuse a `G2` too, since phase 36, so the input still
+never priced. A feature arriving means the call returning a price, and the
+break that does that — the model converted rather than refused — is caught.
+
+The wrap rule came from shortfall, whose first draft of the same list had a
+lead broken across two lines; the page reader saw one gap fewer and the
+same-lines check was the only thing that noticed.
