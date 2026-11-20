@@ -85,6 +85,7 @@ WORDS = {
     "thirty-three": 33,
     "thirty-four": 34,
     "thirty-five": 35,
+    "thirty-six": 36,
 }
 
 #: The sentence the count is written in, on the front page.

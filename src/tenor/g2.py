@@ -355,12 +355,22 @@ class G2:
         return math.sqrt(max(total, 0.0))
 
 
+def _two_factor(model: object, calculation: str) -> None:
+    """Refuse anything but a :class:`G2` before an attribute is read."""
+    if not isinstance(model, G2):
+        raise BadModel(
+            f"{calculation} is a two-factor G2++ calculation and was given "
+            f"a {type(model).__name__}; build a G2(a, sigma, b, eta, rho) for it"
+        )
+
+
 def factor_moments(model: G2, time: float) -> FactorMoments:
     """The joint law of the two factors at ``time``.
 
     Raises:
         BadModel: If ``time`` is negative.
     """
+    _two_factor(model, "factor_moments")
     if not math.isfinite(time) or time < 0.0:
         raise BadModel(f"time must be a non-negative finite number, got {time!r}")
     a, b, sigma, eta, rho = model.a, model.b, model.sigma, model.eta, model.rho
@@ -423,6 +433,7 @@ def zero_rate_correlation(
         BadModel: If ``horizon`` is not positive, either maturity precedes it,
             or the model has no volatility at all.
     """
+    _two_factor(model, "zero_rate_correlation")
     if not math.isfinite(horizon) or horizon <= 0.0:
         raise BadModel(
             f"the horizon must be positive, got {horizon!r}: at zero neither factor "
@@ -514,6 +525,7 @@ def bond_option(
     Raises:
         BadModel: If the dates are out of order or the strike is not positive.
     """
+    _two_factor(model, "bond_option")
     if not math.isfinite(strike) or strike <= 0.0:
         raise BadModel(f"a bond option strike must be positive, got {strike!r}")
     total = model.bond_option_volatility(expiry, maturity)
@@ -570,6 +582,7 @@ def caplet(
         BadModel: If the dates are out of order, or the strike makes the
             equivalent bond strike non-positive.
     """
+    _two_factor(model, "caplet")
     if end <= start:
         raise BadModel(f"a caplet's period must have positive length, got [{start}, {end}]")
     span = (end - start) if accrual is None else float(accrual)
@@ -619,6 +632,7 @@ def cap_price(
         BadModel: If fewer than two dates are given, the dates are not
             ascending, or the accrual count does not match.
     """
+    _two_factor(model, "cap_price")
     if len(dates) < 2:
         raise BadModel(f"a cap needs at least two dates, got {len(dates)}")
     spans: Sequence[float] | None = accruals
@@ -668,6 +682,7 @@ def simulate_factors(
     Raises:
         BadModel: If ``paths`` is not positive, or ``horizon`` is negative.
     """
+    _two_factor(model, "simulate_factors")
     if paths <= 0:
         raise BadModel(f"paths must be a positive number of draws, got {paths!r}")
     moments = factor_moments(model, horizon)
@@ -743,6 +758,7 @@ def fit_fast_volatility(
             because an unreachable target is a statement about the quote.
         BadModel: If ``upper`` or ``nodes`` are out of range.
     """
+    _two_factor(model, "fit_fast_volatility")
     if not math.isfinite(upper) or upper <= 0.0:
         raise BadModel(f"upper must be finite and positive, got {upper!r}")
     if nodes < 3:

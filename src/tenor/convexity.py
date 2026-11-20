@@ -103,7 +103,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .curve import DiscountCurve
-from .hullwhite import BadModel, HullWhite
+from .hullwhite import BadModel, HullWhite, _one_factor
 
 __all__ = [
     "Adjustment",
@@ -250,6 +250,7 @@ def risk_neutral_drift(model: HullWhite, time: float) -> float:
     Raises:
         BadModel: If ``time`` is negative.
     """
+    _one_factor(model, "risk_neutral_drift")
     if not math.isfinite(time) or time < 0.0:
         raise BadModel(f"time cannot be negative, got {time!r}")
     decay = -math.expm1(-model.a * time)
@@ -272,6 +273,7 @@ def short_rate_moments(curve: DiscountCurve, model: HullWhite, time: float) -> R
     Returns:
         The moments of ``r(time)``.
     """
+    _one_factor(model, "short_rate_moments")
     mean = curve.instantaneous_forward(time) + risk_neutral_drift(model, time)
     return RateMoments(mean, model.short_rate_variance(time))
 
@@ -299,6 +301,7 @@ def term_growth_moments(
     Raises:
         BadModel: If the window is empty or starts before today.
     """
+    _one_factor(model, "term_growth_moments")
     tenor = _check_window(start, end)
     factor = model.b(tenor)
     rate = short_rate_moments(curve, model, start)
@@ -337,6 +340,7 @@ def integrated_rate_moments(
     Raises:
         BadModel: If the window is empty or starts before today.
     """
+    _one_factor(model, "integrated_rate_moments")
     length = _check_window(start, end)
     a, sigma = model.a, model.sigma
     span = _integrated_decay(a, end) - _integrated_decay(a, start)
@@ -419,6 +423,7 @@ def expected_settlement_rate(
     Returns:
         The rate the contract's price implies, in decimal.
     """
+    _one_factor(model, "expected_settlement_rate")
     length = _check_window(start, end)
     if settlement is Settlement.AVERAGED:
         return integrated_rate_moments(curve, model, start, end).mean / length
@@ -468,6 +473,7 @@ def convexity_adjustment(
     Returns:
         The adjustment and its decomposition. Every field is in rate units.
     """
+    _one_factor(model, "convexity_adjustment")
     length = _check_window(start, end)
     forward = forward_settlement_rate(
         curve, start, end, accrual=accrual, settlement=settlement
