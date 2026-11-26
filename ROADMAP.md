@@ -1926,3 +1926,36 @@ break that does that — the model converted rather than refused — is caught.
 The wrap rule came from shortfall, whose first draft of the same list had a
 lead broken across two lines; the page reader saw one gap fewer and the
 same-lines check was the only thing that noticed.
+
+## Phase 38 — One public name, one type
+
+`risk` and `parametric` both declared a public `Weighting`. In `risk` it was
+the shift shape, `Callable[[float], float]`, that `level`, `slope`,
+`curvature`, `tent_weights`, `shifted_by` and `shape_duration` are written in;
+in `parametric` it was the enum `fit_bonds` takes. The root bound the enum, so
+`tenor.level()` was annotated as returning a `tenor.Weighting` that was not
+what it returned.
+
+- [x] `risk`'s alias renamed `ShiftShape` and exported from the root, so each
+      public name means one thing and the shift functions' type can be named
+      without reaching into `tenor.risk`
+- [x] A surface check that two modules declaring one name bind the same
+      object, compared by identity; `BadRate`, re-exported by `curve`, passes
+- [x] `tests/test_signatures.py`: every package class and every package alias
+      that a reachable signature or root-class field is written in is bound at
+      the root, by identity, walking into a callback's parameter list
+- [x] Six breaks caught, each confirmed applied, and the tree restored
+      byte-identical
+
+### Why the name checks passed
+
+Every surface check before this one compared names, and the root's `__all__`
+is a set of strings, so the two declarations collapsed into one entry. Asking
+whether the root binds the object each module declared is the question none of
+them asked.
+
+The alias check resolves each name an annotation spells in the globals of the
+module that wrote it. Matching alias names instead, as the first version of
+this probe did, reports `CurveFit`'s `weighting` field: that field is written
+with `parametric`'s enum, which the root binds, and a name match cannot tell it
+from `risk`'s alias.
