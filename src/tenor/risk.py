@@ -45,7 +45,7 @@ from .instruments import Deposit, Future, Instrument, Swap
 from .rates import Compounding, discount_factor, rate_from_discount
 
 #: A shift shape: given a year fraction, how much of the shift applies there.
-Weighting = Callable[[float], float]
+ShiftShape = Callable[[float], float]
 
 #: Anything that turns a curve into a number. A bond's price, a portfolio's
 #: value, a swap's mark — the risk functions here do not care which.
@@ -59,7 +59,7 @@ class BadRisk(ValueError):
 def shifted_by(
     curve: DiscountCurve,
     amount: float,
-    weight: Weighting,
+    weight: ShiftShape,
     compounding: Compounding = Compounding.CONTINUOUS,
 ) -> DiscountCurve:
     """``curve`` with each pillar's zero rate moved by ``amount * weight(t)``.
@@ -97,12 +97,12 @@ def shifted_by(
 # -- named shapes -------------------------------------------------------------
 
 
-def level() -> Weighting:
+def level() -> ShiftShape:
     """One everywhere. The parallel shift, written as a shape for symmetry."""
     return lambda _: 1.0
 
 
-def slope(horizon: float) -> Weighting:
+def slope(horizon: float) -> ShiftShape:
     """Minus one at the front, plus one at ``horizon``, linear between.
 
     Normalised so the *ends* move by the full amount and the midpoint does not
@@ -117,7 +117,7 @@ def slope(horizon: float) -> Weighting:
     return lambda time: 2.0 * time / horizon - 1.0
 
 
-def curvature(horizon: float) -> Weighting:
+def curvature(horizon: float) -> ShiftShape:
     """Plus one at both ends, minus one in the middle. A butterfly.
 
     The wings up and the body down, so a positive curvature shift is the curve
@@ -155,7 +155,7 @@ class KeyRate:
     value: float
 
 
-def tent_weights(times: Sequence[float]) -> tuple[Weighting, ...]:
+def tent_weights(times: Sequence[float]) -> tuple[ShiftShape, ...]:
     """Triangular shapes over ``times`` that add to exactly one everywhere.
 
     Each shape is one at its own bucket and falls linearly to zero at the
@@ -178,7 +178,7 @@ def tent_weights(times: Sequence[float]) -> tuple[Weighting, ...]:
     if len(ordered) == 1:
         return (level(),)
 
-    def make(index: int) -> Weighting:
+    def make(index: int) -> ShiftShape:
         here = ordered[index]
         before = ordered[index - 1] if index else None
         after = ordered[index + 1] if index + 1 < len(ordered) else None
@@ -202,7 +202,7 @@ def tent_weights(times: Sequence[float]) -> tuple[Weighting, ...]:
 def shape_duration(
     value: Valuation,
     curve: DiscountCurve,
-    weight: Weighting,
+    weight: ShiftShape,
     *,
     shift: float = 1e-4,
     compounding: Compounding = Compounding.CONTINUOUS,
@@ -377,8 +377,8 @@ __all__ = [
     "Bucket",
     "InstrumentRisk",
     "KeyRate",
+    "ShiftShape",
     "Valuation",
-    "Weighting",
     "buckets_from",
     "bumped",
     "curvature",

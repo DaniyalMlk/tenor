@@ -277,6 +277,66 @@ def test_a_name_a_module_declares_but_does_not_define_is_a_pinned_re_export() ->
     )
 
 
+def colliding_declarations(
+    declarations: dict[str, dict[str, object]],
+) -> dict[str, list[str]]:
+    """Each name two modules declare for two different objects, with the modules.
+
+    ``declarations`` maps a module to the objects its ``__all__`` names. A
+    name declared by several modules is fine when every one of them binds the
+    same object, which is what a re-export is; it is a collision when they do
+    not, because the root can carry only one of them under that name.
+    """
+    owners: dict[str, list[tuple[str, object]]] = {}
+    for module, objects in sorted(declarations.items()):
+        for name, obj in objects.items():
+            owners.setdefault(name, []).append((module, obj))
+    return {
+        name: [module for module, _ in found]
+        for name, found in sorted(owners.items())
+        if len({id(obj) for _, obj in found}) > 1
+    }
+
+
+def test_one_public_name_means_one_object() -> None:
+    """Two modules may not declare one name for two different things.
+
+    Every check above compares names, and the root's ``__all__`` is a set of
+    strings, so two declarations of ``Weighting`` collapsed into one entry and
+    every check passed. ``risk`` meant a shift shape, the alias ``level`` and
+    ``slope`` return; ``parametric`` meant the enum ``fit_bonds`` takes. The
+    root bound the enum, and ``tenor.level()`` was annotated as returning a
+    ``tenor.Weighting`` that was not the thing it returned.
+
+    ``BadRate`` is declared by ``curve`` and ``rates`` and passes, because
+    both bind the same class.
+    """
+    modules = submodules()
+    collisions = colliding_declarations(
+        {
+            name: {entry: getattr(modules[name], entry) for entry in names}
+            for name, names in declared().items()
+        }
+    )
+    assert not collisions, f"one public name, different objects: {collisions}"
+
+
+def test_a_re_export_is_not_a_collision_and_a_namesake_is() -> None:
+    class Shape:
+        pass
+
+    class Choice:
+        pass
+
+    assert colliding_declarations({"a": {"Shape": Shape}, "b": {"Shape": Shape}}) == {}
+    assert colliding_declarations({"a": {"Shape": Shape}, "b": {"Shape": Choice}}) == {
+        "Shape": ["a", "b"]
+    }
+    # Equal is not enough: two distinct objects that compare equal still
+    # collide, since the root can bind only one of them.
+    assert colliding_declarations({"a": {"N": [1.0]}, "b": {"N": [1.0]}}) == {"N": ["a", "b"]}
+
+
 def test_the_root_is_exactly_the_union_of_the_declarations(
     root: frozenset[str],
 ) -> None:
