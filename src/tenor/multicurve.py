@@ -110,7 +110,7 @@ from .calendar import WEEKENDS_ONLY, Calendar, Rolling
 from .curve import BadCurve, DiscountCurve, Interpolation, OffCurve
 from .daycount import Basis, year_fraction
 from .rates import Compounding
-from .risk import Bucket, KeyRate, Weighting, key_rates, shifted_by, tent_weights
+from .risk import Bucket, KeyRate, ShiftShape, key_rates, shifted_by, tent_weights
 from .schedule import Frequency, Schedule, generate
 from .solve import NoRoot, Root, brent
 
@@ -977,7 +977,7 @@ class SplitRisk:
 def _shifted(
     curve: DiscountCurve,
     amount: float,
-    weight: Weighting,
+    weight: ShiftShape,
     compounding: Compounding,
 ) -> DiscountCurve:
     return shifted_by(curve, amount, weight, compounding)
@@ -987,7 +987,7 @@ def _money_response(
     value: DualValuation,
     discount: DiscountCurve,
     projection: DiscountCurve,
-    weight: Weighting,
+    weight: ShiftShape,
     *,
     shift: float,
     compounding: Compounding,
